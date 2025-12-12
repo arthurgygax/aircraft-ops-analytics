@@ -1,0 +1,7 @@
+streamlit
+traffic>=2.10
+pandas
+plotly
+scipy
+openpyxl
+pyarrow
