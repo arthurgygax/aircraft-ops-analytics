@@ -36,69 +36,55 @@ def classify_flight_direction(df_flight, bbox):
     return "OVERFLIGHT"
 
 def clean_flight_data(df):
-    """
-    Strict physics-based filtering to remove sensor glitches.
-    """
-    # 1. Hard Limits: Remove impossible altitudes/speeds
+    df = df.dropna(subset=['latitude', 'longitude', 'altitude', 'timestamp']).copy()
+    if df.empty: return df
+
     df = df[
-        (df['altitude'] > -1500) & (df['altitude'] < 40000) &
+        (df['altitude'] > -1500) & (df['altitude'] < 60000) &
         (df['groundspeed'] >= 0) & (df['groundspeed'] < 800)
     ].copy()
 
-    # 2. Implied Speed Check (The "Teleport" Killer)
-    # We calculate the speed implied by the jump between points.
+    if df.empty: return df
+
     df.sort_values('timestamp', inplace=True)
-    
-    # Vectorized calculation of distance/time diffs
     df['dt'] = df['timestamp'].diff().dt.total_seconds()
     d_lat = df['latitude'].diff()
     d_lon = df['longitude'].diff()
+    d_alt = df['altitude'].diff().abs() 
     
-    # Euclidean distance in degrees (approximate but sufficient for glitch detection)
-    # 1 degree ~ 60nm ~ 111km
     dist_deg = np.sqrt(d_lat**2 + d_lon**2)
+    implied_groundspeed = dist_deg / df['dt']
+    implied_vertrate = d_alt / df['dt']
     
-    # Calculate implied speed in degrees/second
-    # Commercial jets cruise approx 0.002 deg/s.
-    # We set threshold at 0.003 (approx 1200 km/h or Mach 1) to be safe but strict.
-    implied_speed = dist_deg / df['dt']
-    
-    # Filter Logic:
-    # Keep row IF:
-    # 1. It's the first point (dt is NaN)
-    # 2. OR The time gap is huge (> 1 hour) - allows oceanic flights to reappear
-    # 3. OR The speed required to get here was realistic (< Mach 1)
-    is_valid = (df['dt'].isna()) | (df['dt'] > 3600) | (implied_speed < 0.003)
+    is_valid = (
+        (df['dt'].isna()) | 
+        (df['dt'] > 3600) | 
+        ((implied_groundspeed < 0.003) & (implied_vertrate < 150))
+    )
     
     return df[is_valid].drop(columns=['dt'])
 
 def detect_phases(df_flight):
-    df = df_flight.sort_values('timestamp').copy()
-    
-    # Check for required columns (handling both 'onground' and 'on_ground' just in case)
-    if 'on_ground' in df.columns:
-        df = df.rename(columns={'on_ground': 'onground'})
+    if 'on_ground' in df_flight.columns:
+        df_flight = df_flight.rename(columns={'on_ground': 'onground'})
 
+    df = clean_flight_data(df_flight)
+    
     req_cols = ['vertical_rate', 'groundspeed', 'altitude', 'onground']
-    if not all(col in df.columns for col in req_cols):
-        df['phase'] = 'UNKNOWN'
-        return df
+    if df.empty or not all(col in df.columns for col in req_cols):
+        df_empty = pd.DataFrame(columns=df_flight.columns)
+        df_empty['phase'] = 'UNKNOWN'
+        return df_empty
 
-    # CLEANING: Remove glitches before processing phases
-    df = clean_flight_data(df)
+    vs_smooth = df['vertical_rate'].rolling(window=40, min_periods=1).mean().fillna(df['vertical_rate'])
     
-    if df.empty:
-        df['phase'] = 'UNKNOWN'
-        return df
-
-    # Phase Logic
-    vs_smooth = df['vertical_rate'].rolling(window=5, min_periods=1, center=True).mean().fillna(df['vertical_rate'])
+    is_taxi = (df['onground'] == True) | ((df['altitude'] < 600) & (df['groundspeed'] < 50))
     
-    is_taxi = (df['onground'] == True) | ((df['altitude'] < 150) & (df['groundspeed'] < 30))
     is_climb = (~is_taxi) & (vs_smooth > 8.3)
     is_descent = (~is_taxi) & (vs_smooth < -8.3)
+    
     is_level = (~is_taxi) & (vs_smooth.between(-8.3, 8.3))
-    is_below_cruise = df['altitude'] < 15000 
+    is_below_cruise = df['altitude'] < 18000 
     is_level_off = is_level & is_below_cruise
 
     df['phase'] = 'CRUISE'

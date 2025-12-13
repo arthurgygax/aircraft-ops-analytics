@@ -63,10 +63,10 @@ def main():
     master_df = master_df[master_df['time'] != 'time']
 
     print("Renaming columns to standard names...")
-    # --- FIX: EXACT MAPPING TO RAW COLUMN NAMES ---
+    # --- MAPPING TO RAW COLUMN NAMES ---
     master_df = master_df.rename(columns={
         'time': 'timestamp', 
-        'baroaltitude': 'altitude', # FIX: 'baroaltitude', NOT 'baro_altitude'
+        'baroaltitude': 'altitude',
         'velocity': 'groundspeed', 
         'vertrate': 'vertical_rate',
         'lat': 'latitude',
