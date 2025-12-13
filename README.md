@@ -24,6 +24,11 @@ As the aviation industry generates a lot of ADS-B data daily, raw telemetry is o
 *   **Operational KPIs:** Automated calculation of Taxi-Out duration, Holding Patterns (Level-Offs), and Hourly Throughput.
 *   **Flight Inspector:** Drill-down capability to visualize specific flight profiles (Altitude vs. Ground Speed over time).
 
+## Scope & Data Limitations
+
+* **Geographic Focus:** While the pipeline is architecture-agnostic, this demonstration is currently configured to analyze operations specifically at **Zurich Airport (LSZH)**.
+* **Data Precision:** This project utilizes raw, historical ADS-B state vectors. This data source inherently contains noise, including signal gaps, barometric altitude drift, and sparse ground coverage. While the **Physics Engine** successfully filters out "impossible" movements (glitches), users should treat the metrics as operational estimates rather than forensic-grade flight reconstructions.
+
 ## Technical Architecture
 
 The project follows a decoupled architecture separating heavy data processing from the interactive frontend.
