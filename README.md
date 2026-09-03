@@ -63,6 +63,26 @@ Bronze stays close to the source: nothing is filtered and nothing is corrected �
 
 The table is **not partitioned**. The sample is a single day of ~300k rows (~9 MB across 12 files), so partitioning by date would create exactly one partition and partitioning by aircraft would create 224 tiny ones. Partition by `event_date` once there is more than one day of data.
 
+#### Silver Delta table (new pipeline)
+
+Silver cleans Bronze into observations fit for trajectory work:
+
+```bash
+docker compose run --rm spark python -m adsb.silver
+```
+
+It writes `s3a://adsb/silver/observations` (`ADSB_SILVER_URI`). Each transformation addresses a defect measured in the Bronze sample:
+
+| Transformation | Rows affected |
+|---|---|
+| Deduplicate to one row per `(icao, event_time)` | 473 removed |
+| Flag non-ICAO addresses (`~` prefix) as `is_icao_address = false` | 756 flagged, none dropped |
+| Implausible ground speed (> 700 kt) → `NULL` | 29 in Bronze |
+| Implausible vertical rate (> 20,000 fpm) → `NULL` | 1 |
+| Blank callsign → `NULL` | 12 |
+
+Coordinate ranges, timestamp normalization and column types were profiled and found already clean, so no no-op guards were added for them. Bad *values* are nulled rather than their rows dropped, so a glitched speed never costs a valid position fix.
+
 Run the tests the same way:
 
 ```bash
