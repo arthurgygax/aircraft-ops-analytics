@@ -9,11 +9,22 @@ WORKDIR /app
 # Spark 3.5 needs a JVM (Java 17 is supported); procps supplies the `ps` that
 # Spark's launcher scripts call.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    procps openjdk-17-jre-headless \
+    procps curl openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-adsb.txt .
 RUN pip install --no-cache-dir -r requirements-adsb.txt pytest
+
+# S3A connector, so Spark can read s3a:// URIs. Both JARs must match the Hadoop
+# version PySpark bundles (3.3.4 here) -- mismatched versions fail at runtime
+# with NoSuchMethodError, so they are baked in rather than resolved at launch.
+ARG HADOOP_VERSION=3.3.4
+ARG AWS_SDK_VERSION=1.12.262
+RUN SPARK_JARS="$(python -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))')" \
+    && curl -fsSL -o "$SPARK_JARS/hadoop-aws-${HADOOP_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"
 
 ENV PYTHONPATH=/app/src
 

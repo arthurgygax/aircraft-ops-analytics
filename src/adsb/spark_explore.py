@@ -23,6 +23,7 @@ data can be read and processed, and the storage layers come later.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
@@ -38,6 +39,10 @@ from pyspark.sql.types import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_RAW_PATH = PROJECT_ROOT / "data" / "raw" / "adsb"
 
+# Where to read from: a local path, or an s3a:// URI when object storage is in
+# play. Both are just paths to Spark, so there is one code path, not two.
+DEFAULT_RAW_URI = os.environ.get("ADSB_RAW_URI", str(DEFAULT_RAW_PATH))
+
 # Only the aircraft-level fields we care about; Spark drops the rest.
 AIRCRAFT_SCHEMA = StructType(
     [
@@ -52,13 +57,44 @@ AIRCRAFT_SCHEMA = StructType(
 )
 
 
+def s3a_options(endpoint: str, access_key: str, secret_key: str) -> dict[str, str]:
+    """Hadoop S3A settings for an S3-compatible endpoint.
+
+    Written for MinIO, but the only MinIO-specific parts are the endpoint and
+    path-style access. Point this at AWS by dropping ``endpoint`` and leaving
+    the rest -- there is no second implementation for real S3.
+    """
+    return {
+        "spark.hadoop.fs.s3a.endpoint": endpoint,
+        "spark.hadoop.fs.s3a.access.key": access_key,
+        "spark.hadoop.fs.s3a.secret.key": secret_key,
+        # MinIO serves buckets as a path, not as a DNS subdomain
+        "spark.hadoop.fs.s3a.path.style.access": "true",
+        "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
+        "spark.hadoop.fs.s3a.aws.credentials.provider": (
+            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+        ),
+    }
+
+
 def build_session(app_name: str = "adsb-spark-explore") -> SparkSession:
-    return (
+    builder = (
         SparkSession.builder.appName(app_name)
         .master("local[*]")
         .config("spark.sql.session.timeZone", "UTC")
-        .getOrCreate()
     )
+
+    endpoint = os.environ.get("S3_ENDPOINT")
+    if endpoint:
+        options = s3a_options(
+            endpoint,
+            os.environ["S3_ACCESS_KEY"],
+            os.environ["S3_SECRET_KEY"],
+        )
+        for key, value in options.items():
+            builder = builder.config(key, value)
+
+    return builder.getOrCreate()
 
 
 def read_aircraft(spark: SparkSession, path: Path | str) -> DataFrame:
@@ -149,7 +185,8 @@ def main(argv: list[str] | None = None) -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--path", type=Path, default=DEFAULT_RAW_PATH)
+    # a plain string, not a Path: Path() would collapse the "//" in s3a:// URIs
+    parser.add_argument("--path", default=DEFAULT_RAW_URI)
     args = parser.parse_args(argv)
 
     spark = build_session()

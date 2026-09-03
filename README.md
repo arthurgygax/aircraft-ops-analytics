@@ -24,6 +24,21 @@ This fetches ~8 MB (about 220 aircraft trace files, ~10 s) into `data/raw/adsb/<
 
 Use `--tag` for a different day, `--bytes` for a larger sample. `data/` is gitignored, so this step is how you reproduce the dataset locally.
 
+#### Putting it in object storage (new pipeline)
+
+Raw data lives in an S3 bucket, served locally by [MinIO](https://min.io) so the project runs offline with no cloud account. MinIO speaks the S3 API, so the pipeline uses the same `s3a://` Spark connector and the same boto3 client it would use against AWS — there is one implementation, not one per backend.
+
+```bash
+docker compose up -d minio
+docker compose run --rm spark python -m adsb.upload_raw
+```
+
+That creates the bucket if needed and copies the local sample into it, preserving the layout: `data/raw/adsb/<tag>/...` becomes `s3a://adsb/raw/adsb/<tag>/...`. The MinIO console is at http://localhost:9001.
+
+Credentials default to `minioadmin`/`minioadmin` — local dev values, not secrets. Override them (and the bucket) with `S3_ACCESS_KEY`, `S3_SECRET_KEY` and `S3_BUCKET` in a `.env` file.
+
+To run against real AWS S3 instead, drop `S3_ENDPOINT` and supply AWS credentials; no code changes.
+
 #### Processing it with Spark (new pipeline)
 
 PySpark runs in local mode inside its own container — separate from the Streamlit image, which stays Spark-free. It reads the gzipped traces, explodes each aircraft's trace into one row per position report, and aggregates:
@@ -31,6 +46,8 @@ PySpark runs in local mode inside its own container — separate from the Stream
 ```bash
 docker compose run --rm spark
 ```
+
+It reads from `s3a://adsb/raw/adsb` by default (`ADSB_RAW_URI`). Point it at a local directory with `--path data/raw/adsb` — object storage and the local filesystem are the same code path.
 
 Run the tests the same way:
 
