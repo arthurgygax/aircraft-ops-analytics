@@ -58,6 +58,7 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-adsb}
       ADSB_RAW_URI: s3a://${S3_BUCKET:-adsb}/raw/adsb
+      ADSB_BRONZE_URI: s3a://${S3_BUCKET:-adsb}/bronze/observations
     volumes:
       - ./data:/app/data
       - ./src:/app/src

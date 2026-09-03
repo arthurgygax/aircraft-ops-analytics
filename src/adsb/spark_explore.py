@@ -82,6 +82,12 @@ def build_session(app_name: str = "adsb-spark-explore") -> SparkSession:
         SparkSession.builder.appName(app_name)
         .master("local[*]")
         .config("spark.sql.session.timeZone", "UTC")
+        # Delta: the jars are baked into the image, so only the hooks are set
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
     )
 
     endpoint = os.environ.get("S3_ENDPOINT")
@@ -111,11 +117,21 @@ def read_aircraft(spark: SparkSession, path: Path | str) -> DataFrame:
     )
 
 
-def position_reports(aircraft: DataFrame) -> DataFrame:
-    """Explode each aircraft's trace into one typed row per position report."""
+def typed_points(aircraft: DataFrame, keep: list[str] | None = None) -> DataFrame:
+    """Explode each aircraft's trace into one typed row per position report.
+
+    Decoding only: every source observation survives, including ones with no
+    position fix. Bronze needs that fidelity, so the filtering lives in
+    ``position_reports`` below rather than here.
+
+    ``keep`` names aircraft-level columns to carry through the explode, which
+    is how Bronze attaches its lineage columns.
+    """
+    keep = keep or []
     point = F.col("point")
     return (
         aircraft.select(
+            *keep,
             "icao",
             F.col("r").alias("registration"),
             F.col("t").alias("aircraft_type"),
@@ -124,6 +140,7 @@ def position_reports(aircraft: DataFrame) -> DataFrame:
             F.explode("trace").alias("point"),
         )
         .select(
+            *keep,
             "icao",
             "registration",
             "aircraft_type",
@@ -144,7 +161,13 @@ def position_reports(aircraft: DataFrame) -> DataFrame:
             # position 8 is a nested object on some points only
             F.trim(F.get_json_object(point[8], "$.flight")).alias("callsign"),
         )
-        .where(F.col("latitude").isNotNull() & F.col("longitude").isNotNull())
+    )
+
+
+def position_reports(aircraft: DataFrame) -> DataFrame:
+    """Typed points that actually carry a position."""
+    return typed_points(aircraft).where(
+        F.col("latitude").isNotNull() & F.col("longitude").isNotNull()
     )
 
 

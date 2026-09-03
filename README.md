@@ -49,6 +49,20 @@ docker compose run --rm spark
 
 It reads from `s3a://adsb/raw/adsb` by default (`ADSB_RAW_URI`). Point it at a local directory with `--path data/raw/adsb` — object storage and the local filesystem are the same code path.
 
+#### Bronze Delta table (new pipeline)
+
+Bronze decodes the raw traces into one row per observation and writes them as a [Delta](https://delta.io) table:
+
+```bash
+docker compose run --rm spark python -m adsb.bronze
+```
+
+It writes `s3a://adsb/bronze/observations` (`ADSB_BRONZE_URI`), then reads the table back and prints its schema and Delta history.
+
+Bronze stays close to the source: nothing is filtered and nothing is corrected — impossible speeds and missing fields are all preserved, because judging them is data quality's job, not Bronze's. The only normalization is technical: decoding the positional trace arrays into typed columns, materializing `event_time` from the day-start epoch plus each point's offset, and splitting altitude's `number | "ground"` union into `altitude_ft` plus an `on_ground` flag. Each row carries `source_file`, `release_tag` and `ingested_at` for lineage.
+
+The table is **not partitioned**. The sample is a single day of ~300k rows (~9 MB across 12 files), so partitioning by date would create exactly one partition and partitioning by aircraft would create 224 tiny ones. Partition by `event_date` once there is more than one day of data.
+
 Run the tests the same way:
 
 ```bash

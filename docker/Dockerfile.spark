@@ -20,11 +20,17 @@ RUN pip install --no-cache-dir -r requirements-adsb.txt pytest
 # with NoSuchMethodError, so they are baked in rather than resolved at launch.
 ARG HADOOP_VERSION=3.3.4
 ARG AWS_SDK_VERSION=1.12.262
+# Delta 3.2 is the release line built for Spark 3.5 / Scala 2.12.
+ARG DELTA_VERSION=3.2.0
 RUN SPARK_JARS="$(python -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))')" \
     && curl -fsSL -o "$SPARK_JARS/hadoop-aws-${HADOOP_VERSION}.jar" \
         "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar" \
     && curl -fsSL -o "$SPARK_JARS/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
-        "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"
+        "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/delta-spark_2.12-${DELTA_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${DELTA_VERSION}/delta-spark_2.12-${DELTA_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/delta-storage-${DELTA_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
 
 ENV PYTHONPATH=/app/src
 
