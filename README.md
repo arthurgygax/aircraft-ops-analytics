@@ -4,6 +4,13 @@
 
 **Aircraft Ops Analytics** is a data engineering and visualization pipeline designed to analyze airport operational efficiency. It processes unstructured flight telemetry data downloaded from OpenSky Network to uncover insights regarding airspace congestion, taxi times, and flight profiles.
 
+### Repository contents
+
+This repository currently holds two separate things:
+
+1. **The OpenSky/Streamlit application** — complete and documented below. Reads OpenSky `states_*.csv.tar` dumps via `src/convert_to_parquet.py` and serves them through a Streamlit dashboard.
+2. **A new ADS-B data engineering pipeline** (`src/adsb/`) — under development, sourced from [adsb.lol globe_history](https://github.com/adsblol/globe_history_2025). It is a different source format and does not share code with the application above. Nothing is implemented yet beyond the package layout.
+
 ---
 
 ### Dashboard Preview
@@ -102,12 +109,21 @@ aircraft-ops-analytics/
 ├── docker/
 │   └── Dockerfile             # Shared image for App and Converter
 ├── src/
+│   ├── adsb/                  # New ADS-B pipeline (adsb.lol source, in development)
 │   ├── app.py                 # Main Streamlit dashboard entry point
 │   ├── convert_to_parquet.py  # ETL logic & Data Cleaning pipeline
 │   ├── logic.py               # Physics filtering & Phase detection algorithms
 │   └── viz.py                 # Plotly visualization components
+├── tests/                     # Tests for the new pipeline
 ├── docker-compose.yml         # Service orchestration
-└── requirements.txt           # Python dependencies
+├── requirements.txt           # Python dependencies
+└── requirements-dev.txt       # Dependencies for running the tests
+```
+
+Run the tests for the new pipeline with:
+
+```bash
+pip install -r requirements-dev.txt && pytest
 ```
 
 ## Analytics Modules
