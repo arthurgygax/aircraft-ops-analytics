@@ -60,10 +60,12 @@ def test_extract_traces_writes_only_traces_and_keeps_bytes_verbatim(tmp_path):
 
     written = extract_traces(archive, tmp_path)
 
+    # renamed to .json.gz: the archive calls these .json but they are gzipped,
+    # and suffix-based codec detection (Spark, Hadoop) needs the real suffix
     assert [p.relative_to(tmp_path).as_posix() for p in written] == [
-        "1c/trace_full_abc123.json"
+        "1c/trace_full_abc123.json.gz"
     ]
-    # raw means raw: still gzipped, byte-identical to the archive member
+    # raw means raw: only the name changed, bytes are identical to the member
     assert written[0].read_bytes() == TRACE
 
 
@@ -83,8 +85,8 @@ def test_extract_traces_discards_member_cut_by_the_byte_range(tmp_path):
     )
     written = extract_traces(archive[: cut_header + 512 + 100], tmp_path)
 
-    assert [p.name for p in written] == ["trace_full_complete.json"]
-    assert not (tmp_path / "1c" / "trace_full_cut.json").exists()
+    assert [p.name for p in written] == ["trace_full_complete.json.gz"]
+    assert not (tmp_path / "1c" / "trace_full_cut.json.gz").exists()
 
 
 def test_extract_traces_refuses_to_write_outside_dest(tmp_path):
@@ -95,4 +97,4 @@ def test_extract_traces_refuses_to_write_outside_dest(tmp_path):
     written = extract_traces(archive, dest)
 
     assert written == []
-    assert not (tmp_path.parent / "escaped.json").exists()
+    assert not (tmp_path.parent / "escaped.json.gz").exists()

@@ -9,7 +9,7 @@
 This repository currently holds two separate things:
 
 1. **The OpenSky/Streamlit application** — complete and documented below. Reads OpenSky `states_*.csv.tar` dumps via `src/convert_to_parquet.py` and serves them through a Streamlit dashboard.
-2. **A new ADS-B data engineering pipeline** (`src/adsb/`) — under development, sourced from [adsb.lol globe_history](https://github.com/adsblol/globe_history_2025). It is a different source format and does not share code with the application above. Currently implements raw ingestion only.
+2. **A new ADS-B data engineering pipeline** (`src/adsb/`) — under development, sourced from [adsb.lol globe_history](https://github.com/adsblol/globe_history_2025). It is a different source format and does not share code with the application above. Currently implements raw ingestion and local PySpark processing.
 
 #### Getting the sample data (new pipeline)
 
@@ -20,9 +20,23 @@ pip install -r requirements-dev.txt
 PYTHONPATH=src python -m adsb.ingest
 ```
 
-This fetches ~8 MB (about 220 aircraft trace files, ~10 s) into `data/raw/adsb/<release-tag>/traces/`, alongside a `manifest.json` recording the exact release, byte range and checksum used. Files are stored exactly as they appear in the archive — gzipped readsb [trace JSON](https://github.com/wiedehopf/readsb/blob/dev/README-json.md#trace-jsons), unparsed and uncleaned.
+This fetches ~8 MB (about 220 aircraft trace files, ~10 s) into `data/raw/adsb/<release-tag>/traces/`, alongside a `manifest.json` recording the exact release, byte range and checksum used. File contents are stored exactly as they appear in the archive — gzipped readsb [trace JSON](https://github.com/wiedehopf/readsb/blob/dev/README-json.md#trace-jsons), unparsed and uncleaned. Only the name gains its true `.gz` suffix, because tools that pick a decompression codec from the suffix (Spark among them) otherwise read the gzip bytes as text.
 
 Use `--tag` for a different day, `--bytes` for a larger sample. `data/` is gitignored, so this step is how you reproduce the dataset locally.
+
+#### Processing it with Spark (new pipeline)
+
+PySpark runs in local mode inside its own container — separate from the Streamlit image, which stays Spark-free. It reads the gzipped traces, explodes each aircraft's trace into one row per position report, and aggregates:
+
+```bash
+docker compose run --rm spark
+```
+
+Run the tests the same way:
+
+```bash
+docker compose run --rm spark pytest -q
+```
 
 ---
 

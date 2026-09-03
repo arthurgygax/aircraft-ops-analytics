@@ -1,0 +1,20 @@
+# Image for the new ADS-B pipeline. Separate from docker/Dockerfile, which
+# builds the legacy OpenSky/Streamlit app and must stay free of Spark.
+# Debian pinned to bookworm on purpose: trixie dropped openjdk-17, and Spark
+# 3.5 supports Java 8/11/17 only.
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Spark 3.5 needs a JVM (Java 17 is supported); procps supplies the `ps` that
+# Spark's launcher scripts call.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-adsb.txt .
+RUN pip install --no-cache-dir -r requirements-adsb.txt pytest
+
+ENV PYTHONPATH=/app/src
+
+CMD ["python", "-m", "adsb.spark_explore"]

@@ -82,6 +82,22 @@ def find_member_offset(read, prefix: str = TRACES_PREFIX, max_headers: int = 500
     raise ValueError(f"did not find {prefix!r} within {max_headers} members")
 
 
+def local_name(relative: str) -> str:
+    """Give a trace file the ``.json.gz`` name its contents actually warrant.
+
+    The archive names these files ``.json`` even though every one of them is
+    gzipped -- correct for readsb, which serves them over HTTP with
+    ``Content-Encoding: gzip``, but misleading on disk. Tools that pick their
+    decompression codec from the file suffix (Spark and Hadoop do) would
+    otherwise read the gzip bytes as text and silently produce garbage.
+
+    Only the name changes; the bytes are still written verbatim.
+    """
+    if relative.endswith(".json"):
+        return relative + ".gz"
+    return relative
+
+
 def extract_traces(archive: bytes, dest: Path) -> list[Path]:
     """Write the complete ``./traces/`` files in ``archive`` under ``dest``.
 
@@ -98,7 +114,7 @@ def extract_traces(archive: bytes, dest: Path) -> list[Path]:
             if not member.isfile() or not member.name.startswith(TRACES_PREFIX):
                 continue
 
-            relative = member.name[len(TRACES_PREFIX):]
+            relative = local_name(member.name[len(TRACES_PREFIX):])
             target = (dest / relative).resolve()
             if os.path.commonpath([str(dest), str(target)]) != str(dest):
                 continue  # refuse to write outside dest

@@ -22,3 +22,15 @@ services:
       - ./data:/app/data
     # This overrides the default CMD to run our conversion script instead of Streamlit
     command: python src/convert_to_parquet.py
+
+  # New ADS-B pipeline: PySpark in local mode. Separate image from the two
+  # services above, which stay Spark-free.
+  spark:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.spark
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./pyproject.toml:/app/pyproject.toml
