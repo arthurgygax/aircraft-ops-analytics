@@ -194,6 +194,40 @@ Fast enough for an interactive dashboard, so the table is left unpartitioned bey
 - `first_seen_time` / `last_seen_time` are when *tracking* started and stopped — not departure and arrival. Only `departure_time` / `arrival_time` mean that, and only when an airport matched.
 - Everything inherited from reconstruction: coverage-hole splits, turnarounds merged into one flight, clipping at midnight.
 
+#### Flight phases (new pipeline)
+
+```bash
+docker compose run --rm spark python -m adsb.phases
+```
+
+Writes `s3a://adsb/gold/flight_phases` (`ADSB_PHASES_URI`): one row per contiguous phase of a flight, so a flight has several rows. Phases are deliberately *not* folded into `silver.flights` — a flight has many, and flattening would force an arbitrary choice of which one.
+
+**These are inferred, not operational records.** Every phase is deduced from radio observations of altitude, vertical rate and the ground flag. Nothing comes from a flight plan, an airline system or an ATC record. A phase boundary is where the *evidence* changes, which is close to but not identical with where the aircraft actually changed regime.
+
+**Phases**: `taxi_out`, `climb`, `cruise`, `descent`, `taxi_in`, `taxi`, `unknown`.
+
+**Algorithm.** Smooth the vertical rate over a **time** window, label each observation, then collapse consecutive identical labels into intervals. On the ground → `taxi_out` / `taxi_in` / `taxi` depending on whether the point falls before, after or between that flight's airborne observations. Airborne → `climb` / `descent` outside the level band, `cruise` inside it. No evidence → `unknown`.
+
+The legacy Streamlit implementation was the starting point, but two of its assumptions do not transfer and were re-derived:
+
+- Its `8.3` vertical-rate threshold is **metres per second** (OpenSky units); this pipeline carries feet per minute.
+- Its `rolling(40)` averaged 40 *rows*, which suited OpenSky's 1 Hz sampling. Here the within-flight gap has a median of 4 s but a mean of 8.1 s and a p90 of 20 s, so 40 rows would span roughly five minutes for some flights and forty seconds for others. The window is now defined in **seconds** (`RANGE BETWEEN`), averaging the same amount of flight time regardless of observation density.
+
+**Two thresholds, both named constants and both adjustable** (`--level-band-fpm`, `--smoothing-seconds`):
+
+| Constant | Value | Why |
+|---|---|---|
+| `LEVEL_BAND_FPM` | 300 | Airborne vertical rates have p25 = −640 and p75 = +512 fpm, so ±300 sits well inside genuine climbs and descents while matching the conventional level-flight tolerance |
+| `SMOOTHING_WINDOW_SECONDS` | 60 | Long enough to suppress sample-to-sample noise, short enough not to blur a real top-of-climb |
+
+**Not detected: takeoff, landing, approach.** The data supports "on the ground" vs "airborne" and the sign of the vertical rate; it does not support a defensible takeoff-roll or final-approach boundary without runway geometry. The ground-to-air transition is already visible as `taxi_out` → `climb`, and wrapping a fixed-duration "takeoff" around it would add a threshold with no evidence behind it.
+
+**Results on the sample**: 740,488 phase runs over all 107,630 flights. Mean vertical rate per phase comes out at +1,148 fpm for `climb`, −843 for `descent` and −29 for `cruise`, and taxi-out runs a median 614 s against taxi-in's 236 s — the real departure-queue asymmetry. Neither was encoded anywhere.
+
+**Fragmentation.** A flight has a median of 5 phase runs (p90 14, p99 43). 32.3% of runs are under 60 s and 7.7% are a single observation. Much of that is genuine: a real PHL→DFW flight shows a 57-second `cruise` at 10,100 ft (the 10,000 ft speed-restriction level-off) and a 48-second one at 5,525 ft (an ATC step-down). Some is not: a step-down descent can alternate `descent`/`cruise` several times. No minimum-duration merging is applied, because separating a real level-off from flicker needs a threshold the data does not yet justify — consumers wanting only substantial phases should filter on `duration_seconds` or `n_observations`.
+
+**Limitations.** Taxi phases need ground observations, which only **43.9%** of flights have — the rest simply begin in `climb` or `cruise`. A flight tracked through a turnaround yields a mid-flight `taxi` run. `cruise` means level airborne flight at *any* altitude, so at low altitude it may be a level-off or a circuit. `unknown` appears where vertical rate is absent across a whole smoothing window, which is honest rather than a guess. Everything inherited from reconstruction propagates here.
+
 #### Data quality checks (new pipeline)
 
 Every stage validates its own output before finishing, and the whole set can be re-run against the published tables:

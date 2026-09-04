@@ -111,6 +111,23 @@ FLIGHT_RULES: Mapping[str, str] = {
         " OR (arrival_airport_ident IS NOT NULL AND arrival_time IS NULL)",
 }
 
+FLIGHT_PHASE_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "phase is one of the known labels":
+        "phase NOT IN ('taxi_out','climb','cruise','descent','taxi_in','taxi','unknown')",
+    "start_time is present": "start_time IS NULL",
+    "end_time is present": "end_time IS NULL",
+    "phase does not end before it starts": "end_time < start_time",
+    "duration is not negative": "duration_seconds < 0",
+    "phase has at least one observation": "n_observations < 1",
+    "duration agrees with the timestamps":
+        "duration_seconds <> UNIX_TIMESTAMP(end_time) - UNIX_TIMESTAMP(start_time)",
+    "phase_seq starts at one": "phase_seq < 1",
+    # a ground phase has no altitude, an airborne one should have some
+    "taxi phases carry no altitude":
+        "phase IN ('taxi_out','taxi_in','taxi') AND max_altitude_ft IS NOT NULL",
+}
+
 GOLD_RULES: Mapping[str, str] = {
     "operations_date is present": "operations_date IS NULL",
     "airport_ident is present": "airport_ident IS NULL OR airport_ident = ''",
@@ -262,6 +279,17 @@ def validate_flights(df: DataFrame) -> list[CheckResult]:
     return validate("flights", df, FLIGHT_RULES, unique_keys=("flight_id",))
 
 
+def validate_flight_phases(df: DataFrame) -> list[CheckResult]:
+    return validate(
+        "flight_phases",
+        df,
+        FLIGHT_PHASE_RULES,
+        # one run per position in the flight: overlapping or repeated
+        # sequence numbers would mean the interval collapse went wrong
+        unique_keys=("flight_id", "phase_seq"),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Validate every published table. Exits non-zero if any check fails."""
     import argparse
@@ -275,6 +303,7 @@ def main(argv: list[str] | None = None) -> None:
         read_flights,
     )
     from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
+    from adsb.phases import DEFAULT_PHASES_URI, read_flight_phases
     from adsb.gold import DEFAULT_GOLD_URI, read_airport_metrics
     from adsb.silver import DEFAULT_SILVER_URI, read_silver
     from adsb.spark_explore import build_session
@@ -286,6 +315,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--gold", default=DEFAULT_GOLD_URI)
     parser.add_argument("--flight-observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
     parser.add_argument("--flights-model", default=DEFAULT_FLIGHTS_MODEL_URI)
+    parser.add_argument("--phases", default=DEFAULT_PHASES_URI)
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-quality")
@@ -309,6 +339,10 @@ def main(argv: list[str] | None = None) -> None:
                 ),
             ),
             ("flights", validate_flights(read_flights(spark, args.flights_model))),
+            (
+                "flight_phases",
+                validate_flight_phases(read_flight_phases(spark, args.phases)),
+            ),
             ("gold", validate_gold(read_airport_metrics(spark, args.gold))),
         ]
 
