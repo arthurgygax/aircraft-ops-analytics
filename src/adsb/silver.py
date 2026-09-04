@@ -18,6 +18,8 @@ import os
 
 from pyspark.sql import DataFrame, SparkSession
 
+from adsb.quality import assert_valid, report, validate_silver
+
 DEFAULT_SILVER_URI = os.environ.get("ADSB_SILVER_URI", "s3a://adsb/silver/observations")
 
 # Above any plausible ground speed for civil traffic: the fastest credible
@@ -135,6 +137,10 @@ def main(argv: list[str] | None = None) -> None:
             FROM silver_observations
             """
         ).show(truncate=False)
+
+        results = validate_silver(table)
+        print(report("silver", results))
+        assert_valid("silver", results)
     finally:
         spark.stop()
 

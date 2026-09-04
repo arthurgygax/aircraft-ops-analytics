@@ -27,6 +27,7 @@ import os
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from adsb.quality import assert_valid, report, validate_bronze
 from adsb.spark_explore import DEFAULT_RAW_URI, build_session, read_aircraft, typed_points
 
 DEFAULT_BRONZE_URI = os.environ.get(
@@ -96,6 +97,10 @@ def main(argv: list[str] | None = None) -> None:
         DeltaTable.forPath(spark, args.bronze).history().select(
             "version", "timestamp", "operation", "operationMetrics"
         ).show(5, truncate=False)
+
+        results = validate_bronze(table)
+        print(report("bronze", results))
+        assert_valid("bronze", results)
     finally:
         spark.stop()
 

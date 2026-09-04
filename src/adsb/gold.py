@@ -63,6 +63,8 @@ import os
 
 from pyspark.sql import DataFrame, SparkSession
 
+from adsb.quality import assert_valid, report, validate_gold
+
 DEFAULT_GOLD_URI = os.environ.get(
     "ADSB_GOLD_URI", "s3a://adsb/gold/airport_daily_operations"
 )
@@ -254,6 +256,10 @@ def main(argv: list[str] | None = None) -> None:
             FROM gold ORDER BY total_operations DESC LIMIT 15
             """
         ).show(truncate=False)
+
+        results = validate_gold(table)
+        print(report("gold", results))
+        assert_valid("gold", results)
     finally:
         spark.stop()
 

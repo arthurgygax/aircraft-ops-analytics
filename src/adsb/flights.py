@@ -57,6 +57,8 @@ import os
 
 from pyspark.sql import DataFrame, SparkSession
 
+from adsb.quality import assert_valid, report, validate_flight_segments
+
 DEFAULT_FLIGHTS_URI = os.environ.get(
     "ADSB_FLIGHTS_URI", "s3a://adsb/silver/flight_segments"
 )
@@ -207,6 +209,10 @@ def main(argv: list[str] | None = None) -> None:
             FROM flight_segments ORDER BY duration_seconds DESC LIMIT 5
             """
         ).show(truncate=False)
+
+        results = validate_flight_segments(table)
+        print(report("flight_segments", results))
+        assert_valid("flight_segments", results)
     finally:
         spark.stop()
 

@@ -132,6 +132,25 @@ Airport reference data is [OurAirports](https://ourairports.com/data/) (public d
 - Everything inherited from reconstruction: turnarounds merged into one segment, coverage-hole splits, midnight truncation.
 - Absolute counts are **not** calibrated against official figures and undercount wherever ADS-B coverage is thin.
 
+#### Data quality checks (new pipeline)
+
+Every stage validates its own output before finishing, and the whole set can be re-run against the published tables:
+
+```bash
+docker compose run --rm spark python -m adsb.quality
+```
+
+48 checks across the four tables. A check is a SQL predicate matching *invalid* rows; a table's checks are counted in one pass, and a failure raises `DataQualityError` naming every check that failed, not just the first. No framework — the rules live next to the transformations they protect.
+
+The rules come from failure modes this pipeline actually exhibited:
+
+- **Silent emptiness.** A mistyped URI or empty bucket yields zero rows and every downstream table then builds successfully and empty. Each table asserts it is non-empty.
+- **Silent string corruption.** `release_tag` is filled by a regex that once quietly produced `''` for an unexpected path shape. Empty-string checks exist because that happened.
+- **Invariants that hold by construction and would otherwise go unverified**: one Silver row per `(icao, event_time)`; segments never end before they start; every observation lands in exactly one segment; `arrivals + departures = total_operations`.
+- **Coordinate ranges.** Silver deliberately does not *correct* coordinates, since profiling found none out of range — but that is a statement about one release, so it is asserted rather than assumed.
+
+Layer rules differ on purpose: Bronze keeps the source's implausible values and is checked only for structural integrity, while Silver promises those values are gone and is checked for exactly that.
+
 Run the tests the same way:
 
 ```bash
