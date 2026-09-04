@@ -56,7 +56,9 @@ from __future__ import annotations
 import os
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
+from adsb.delta_io import write_delta
 from adsb.quality import assert_valid, report, validate_flight_segments
 
 DEFAULT_FLIGHTS_URI = os.environ.get(
@@ -127,7 +129,8 @@ SELECT
     MAX(CASE WHEN on_ground THEN 1 ELSE 0 END) = 1 AS saw_ground,
     MAX(altitude_ft)                            AS max_altitude_ft,
     MAX(ground_speed_kt)                        AS max_ground_speed_kt,
-    MAX(release_tag)                            AS release_tag
+    MAX(release_tag)                            AS release_tag,
+    MAX(release_date)                           AS release_date
 FROM segmented
 GROUP BY icao, segment_no
 """
@@ -142,14 +145,13 @@ def to_flight_segments(observations: DataFrame, gap_seconds: int = GAP_SECONDS) 
     )
 
 
-def write_flight_segments(segments: DataFrame, path: str, mode: str = "overwrite") -> None:
-    writer = segments.write.format("delta").mode(mode)
-    if mode == "overwrite":
-        # Delta refuses a schema change by default. An overwrite replaces the
-        # table wholesale, so accepting the new schema there is the intent;
-        # append still gets the protection.
-        writer = writer.option("overwriteSchema", "true")
-    writer.save(path)
+def write_flight_segments(
+    segments: DataFrame,
+    path: str,
+    mode: str = "overwrite",
+    release_date: str | None = None,
+) -> None:
+    write_delta(segments, path, mode=mode, release_date=release_date)
 
 
 def read_flight_segments(spark: SparkSession, path: str) -> DataFrame:
@@ -167,15 +169,26 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--flights", default=DEFAULT_FLIGHTS_URI)
     parser.add_argument("--gap-seconds", type=int, default=GAP_SECONDS)
     parser.add_argument("--mode", default="overwrite", choices=["overwrite", "append"])
+    parser.add_argument(
+        "--release-date",
+        default=None,
+        help="process one day only, replacing just that partition",
+    )
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-flights")
     try:
         observations = read_silver(spark, args.silver)
+        if args.release_date:
+            observations = observations.where(
+                F.col("release_date") == F.lit(args.release_date)
+            )
         segments = to_flight_segments(observations, args.gap_seconds)
 
         print(f"Writing {args.flights} (gap={args.gap_seconds}s, mode={args.mode})")
-        write_flight_segments(segments, args.flights, args.mode)
+        write_flight_segments(
+            segments, args.flights, args.mode, release_date=args.release_date
+        )
 
         table = read_flight_segments(spark, args.flights)
         print(f"observations: {observations.count():,}")

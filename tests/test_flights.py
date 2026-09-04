@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -14,18 +14,20 @@ from adsb.flights import (  # noqa: E402
 SILVER_COLUMNS = (
     "icao is_icao_address registration aircraft_type operator event_time latitude "
     "longitude on_ground altitude_ft ground_speed_kt track_deg vertical_rate_fpm "
-    "callsign release_tag ingested_at"
+    "callsign release_tag release_date ingested_at"
 ).split()
 
 START = datetime(2025, 12, 30, 8, 0, 0)
 INGESTED = datetime(2026, 1, 1)
+RELEASE_DATE = date(2025, 12, 30)
 
 
 def obs(icao="a1b2c3", offset_s=0, lat=47.0, lon=8.0, callsign="SWR1",
         on_ground=False, alt=10000.0, gs=300.0):
     """One Silver observation, ``offset_s`` after START."""
     return (icao, True, "HB-ABC", "A320", "SWISS", START + timedelta(seconds=offset_s),
-            lat, lon, on_ground, alt, gs, 90.0, 0.0, callsign, "v2025.12.30", INGESTED)
+            lat, lon, on_ground, alt, gs, 90.0, 0.0, callsign, "v2025.12.30",
+            RELEASE_DATE, INGESTED)
 
 
 @pytest.fixture

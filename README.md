@@ -151,6 +151,38 @@ The rules come from failure modes this pipeline actually exhibited:
 
 Layer rules differ on purpose: Bronze keeps the source's implausible values and is checked only for structural integrity, while Silver promises those values are gone and is checked for exactly that.
 
+#### Incremental, idempotent processing (new pipeline)
+
+One adsb.lol release is one UTC day, so the day is the unit of work. Every table is partitioned by `release_date`, and each stage can process a single day, replacing only that day's partition:
+
+```bash
+TAG=v2025.12.29-planes-readsb-prod-0
+DAY=2025-12-29
+
+python -m adsb.ingest --tag $TAG                      # download one day
+docker compose run --rm spark python -m adsb.upload_raw --tag $TAG
+docker compose run --rm spark python -m adsb.bronze   --tag $TAG
+docker compose run --rm spark python -m adsb.silver   --release-date $DAY
+docker compose run --rm spark python -m adsb.flights  --release-date $DAY
+docker compose run --rm spark python -m adsb.gold     --release-date $DAY
+```
+
+Omit the flags and a stage rebuilds its whole table, which is how the first day is loaded and how a schema change is rolled out.
+
+**`replaceWhere`, not MERGE.** Reprocessing a day should reproduce that day exactly, not reconcile it row by row. `replaceWhere` atomically swaps one partition's files and leaves every other partition alone — precisely "rebuild this day, keep the others". MERGE would be the right tool if we received corrections to individual observations; we receive whole days.
+
+**`release_date` comes from the release identifier, not from row timestamps.** This matters: a key derived from the data would let a stray observation near midnight pull a neighbouring day's partition into the write, so reprocessing day N could destroy part of day N−1. Deriving it from the release makes that impossible, and Delta rejects a write whose rows fall outside the predicate.
+
+Measured on 44.4M rows of day 1 plus a small day 2, from the Delta transaction log:
+
+| Version | Operation | Rows written | Files added | Files removed |
+|---|---|---|---|---|
+| v6 | full rebuild, day 1 | 44,398,534 | 983 | 0 |
+| v7 | add day 2 | 293,728 | 12 | **0** |
+| v8 | reprocess day 2 | 293,728 | 12 | **12** |
+
+Adding a day removed no existing files — day 1 was never rewritten. Reprocessing removed exactly the 12 files it had previously written, and row counts were unchanged.
+
 Run the tests the same way:
 
 ```bash

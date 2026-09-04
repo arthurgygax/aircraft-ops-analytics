@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -12,6 +12,7 @@ from adsb.gold import (  # noqa: E402
 )
 
 from pyspark.sql.types import (  # noqa: E402
+    DateType,
     DoubleType,
     StringType,
     StructField,
@@ -20,12 +21,13 @@ from pyspark.sql.types import (  # noqa: E402
 )
 
 
-def _schema(strings=(), timestamps=(), doubles=()):
+def _schema(strings=(), timestamps=(), doubles=(), dates=()):
     """Explicit schemas: an all-null altitude column defeats type inference."""
     return StructType(
         [StructField(n, StringType()) for n in strings]
         + [StructField(n, TimestampType()) for n in timestamps]
         + [StructField(n, DoubleType()) for n in doubles]
+        + [StructField(n, DateType()) for n in dates]
     )
 
 
@@ -34,6 +36,7 @@ SEGMENT_SCHEMA = _schema(
     timestamps=("start_time", "end_time"),
     doubles=("start_latitude", "start_longitude", "end_latitude", "end_longitude",
              "start_altitude_ft", "end_altitude_ft"),
+    dates=("release_date",),
 )
 
 AIRPORT_SCHEMA = _schema(
@@ -57,7 +60,8 @@ def segment(segment_id="s1", icao="a1b2c3", start=(47.458, 8.548), end=(47.458, 
             start_alt=None, end_alt=None, minutes=60):
     return (segment_id, icao, "A320", "SWISS", "SWR1", "v2025.12.30",
             T0, T0 + timedelta(minutes=minutes),
-            start[0], start[1], end[0], end[1], start_alt, end_alt)
+            start[0], start[1], end[0], end[1], start_alt, end_alt,
+            date(2025, 12, 30))
 
 
 @pytest.fixture

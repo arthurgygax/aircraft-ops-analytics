@@ -17,7 +17,9 @@ from __future__ import annotations
 import os
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
+from adsb.delta_io import write_delta
 from adsb.quality import assert_valid, report, validate_silver
 
 DEFAULT_SILVER_URI = os.environ.get("ADSB_SILVER_URI", "s3a://adsb/silver/observations")
@@ -69,6 +71,7 @@ SELECT
     -- a padded-empty callsign is a missing callsign, not a value
     NULLIF(TRIM(callsign), '')                      AS callsign,
     release_tag,
+    release_date,
     ingested_at
 FROM ranked
 WHERE row_rank = 1
@@ -86,9 +89,14 @@ def to_silver(bronze: DataFrame) -> DataFrame:
     return bronze.sparkSession.sql(_SILVER_SQL.format(source=view))
 
 
-def write_silver(silver: DataFrame, path: str, mode: str = "overwrite") -> None:
-    """Unpartitioned, for the same reason Bronze is: one day of ~300k rows."""
-    silver.write.format("delta").mode(mode).save(path)
+def write_silver(
+    silver: DataFrame,
+    path: str,
+    mode: str = "overwrite",
+    release_date: str | None = None,
+) -> None:
+    """Partitioned by day so one day can be reprocessed on its own."""
+    write_delta(silver, path, mode=mode, release_date=release_date)
 
 
 def read_silver(spark: SparkSession, path: str) -> DataFrame:
@@ -105,21 +113,36 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bronze", default=DEFAULT_BRONZE_URI)
     parser.add_argument("--silver", default=DEFAULT_SILVER_URI)
     parser.add_argument("--mode", default="overwrite", choices=["overwrite", "append"])
+    parser.add_argument(
+        "--release-date",
+        default=None,
+        help="process one day only, replacing just that partition",
+    )
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-silver")
     try:
         bronze = read_bronze(spark, args.bronze)
+        if args.release_date:
+            # partition pruning: only this day is read and only it is rewritten
+            bronze = bronze.where(F.col("release_date") == F.lit(args.release_date))
         silver = to_silver(bronze)
 
         bronze_rows = bronze.count()
         print(f"Writing {args.silver} (mode={args.mode})")
-        write_silver(silver, args.silver, args.mode)
+        write_silver(silver, args.silver, args.mode, release_date=args.release_date)
 
         table = read_silver(spark, args.silver)
-        silver_rows = table.count()
-        print(f"Bronze rows: {bronze_rows:,}")
-        print(f"Silver rows: {silver_rows:,}  ({bronze_rows - silver_rows:,} removed)")
+        # in incremental mode the input is one day but the table holds them all,
+        # so report the day that was written separately from the whole table
+        written = table
+        if args.release_date:
+            written = table.where(F.col("release_date") == F.lit(args.release_date))
+        written_rows = written.count()
+        print(f"Bronze rows read:   {bronze_rows:,}")
+        print(f"Silver rows written: {written_rows:,}"
+              f"  ({bronze_rows - written_rows:,} removed)")
+        print(f"Silver rows total:   {table.count():,}")
 
         print("\n--- Silver schema ---")
         table.printSchema()

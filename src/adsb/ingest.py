@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tarfile
 import urllib.request
 from datetime import datetime, timezone
@@ -38,6 +39,22 @@ TRACES_PREFIX = "./traces/"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DEST_ROOT = PROJECT_ROOT / "data" / "raw" / "adsb"
+
+
+RELEASE_TAG_DATE = re.compile(r"^v(\d{4})\.(\d{2})\.(\d{2})-")
+
+
+def release_date(tag: str) -> str:
+    """The UTC day a release covers, e.g. ``v2025.12.30-...`` -> ``2025-12-30``.
+
+    One release is one day, so this is the pipeline's unit of work. Taking it
+    from the tag rather than from the observations keeps a day's partition
+    independent of what the data happens to contain.
+    """
+    match = RELEASE_TAG_DATE.match(tag)
+    if not match:
+        raise ValueError(f"cannot read a date from release tag {tag!r}")
+    return "-".join(match.groups())
 
 
 def asset_url(tag: str) -> str:

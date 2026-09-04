@@ -62,7 +62,9 @@ from __future__ import annotations
 import os
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
+from adsb.delta_io import write_delta
 from adsb.quality import assert_valid, report, validate_gold
 
 DEFAULT_GOLD_URI = os.environ.get(
@@ -98,12 +100,14 @@ WITH moving AS (
 ),
 endpoints AS (
     SELECT segment_id, icao, aircraft_type, operator, callsign, release_tag,
+           release_date,
            'departure' AS movement_type,
            start_time AS event_time, start_latitude AS latitude,
            start_longitude AS longitude, start_altitude_ft AS altitude_ft
     FROM moving
     UNION ALL
     SELECT segment_id, icao, aircraft_type, operator, callsign, release_tag,
+           release_date,
            'arrival',
            end_time, end_latitude, end_longitude, end_altitude_ft
     FROM moving
@@ -157,6 +161,7 @@ SELECT
     MIN(event_time)                                             AS first_operation_time,
     MAX(event_time)                                             AS last_operation_time,
     MAX(release_tag)                                            AS release_tag,
+    MAX(release_date)                                           AS release_date,
     'adsb_inferred'                                             AS metric_source
 FROM {movements}
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
@@ -192,11 +197,13 @@ def to_airport_metrics(movements: DataFrame) -> DataFrame:
     return movements.sparkSession.sql(_METRICS_SQL.format(movements="airport_movements"))
 
 
-def write_airport_metrics(metrics: DataFrame, path: str, mode: str = "overwrite") -> None:
-    writer = metrics.write.format("delta").mode(mode)
-    if mode == "overwrite":
-        writer = writer.option("overwriteSchema", "true")
-    writer.save(path)
+def write_airport_metrics(
+    metrics: DataFrame,
+    path: str,
+    mode: str = "overwrite",
+    release_date: str | None = None,
+) -> None:
+    write_delta(metrics, path, mode=mode, release_date=release_date)
 
 
 def read_airport_metrics(spark: SparkSession, path: str) -> DataFrame:
@@ -216,18 +223,29 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--gold", default=DEFAULT_GOLD_URI)
     parser.add_argument("--radius-km", type=float, default=MATCH_RADIUS_KM)
     parser.add_argument("--mode", default="overwrite", choices=["overwrite", "append"])
+    parser.add_argument(
+        "--release-date",
+        default=None,
+        help="process one day only, replacing just that partition",
+    )
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-gold")
     try:
         segments = read_flight_segments(spark, args.flights)
+        if args.release_date:
+            segments = segments.where(
+                F.col("release_date") == F.lit(args.release_date)
+            )
         airports = read_airports(spark, args.airports)
 
         movements = airport_movements(segments, airports, args.radius_km)
         metrics = to_airport_metrics(movements)
 
         print(f"Writing {args.gold} (mode={args.mode})")
-        write_airport_metrics(metrics, args.gold, args.mode)
+        write_airport_metrics(
+            metrics, args.gold, args.mode, release_date=args.release_date
+        )
 
         table = read_airport_metrics(spark, args.gold)
         table.createOrReplaceTempView("gold")

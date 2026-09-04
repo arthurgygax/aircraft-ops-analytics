@@ -57,8 +57,14 @@ def upload_raw(
     source_root: Path = DEFAULT_DEST_ROOT,
     bucket: str = DEFAULT_BUCKET,
     prefix: str = DEFAULT_PREFIX,
+    tag: str | None = None,
 ) -> list[str]:
-    """Upload every file under ``source_root``. Returns the keys written."""
+    """Upload files under ``source_root``. Returns the keys written.
+
+    ``tag`` restricts the upload to one release, so adding a day does not
+    re-send every day already uploaded. Keys stay relative to ``source_root``
+    either way, keeping the layout identical.
+    """
     source_root = Path(source_root)
     if not source_root.exists():
         raise FileNotFoundError(
@@ -68,7 +74,8 @@ def upload_raw(
     ensure_bucket(client, bucket)
 
     keys = []
-    for path in sorted(source_root.rglob("*")):
+    scope = source_root / tag if tag else source_root
+    for path in sorted(scope.rglob("*")):
         if not path.is_file():
             continue
         key = object_key(path, source_root, prefix)
@@ -84,9 +91,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--source", type=Path, default=DEFAULT_DEST_ROOT)
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
+    parser.add_argument("--tag", default=None, help="upload one release only")
     args = parser.parse_args(argv)
 
-    keys = upload_raw(build_client(), args.source, args.bucket, args.prefix)
+    keys = upload_raw(build_client(), args.source, args.bucket, args.prefix, args.tag)
     print(f"Uploaded {len(keys)} objects to s3a://{args.bucket}/{args.prefix}/")
 
 

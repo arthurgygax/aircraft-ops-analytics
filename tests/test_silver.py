@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -9,18 +9,19 @@ from adsb.silver import read_silver, to_silver, write_silver  # noqa: E402
 BRONZE_COLUMNS = (
     "icao registration aircraft_type operator event_time latitude longitude "
     "on_ground altitude_ft ground_speed_kt track_deg vertical_rate_fpm callsign "
-    "release_tag ingested_at"
+    "release_tag release_date ingested_at"
 ).split()
 
 T0 = datetime(2025, 12, 30, 10, 0, 0)
 T1 = datetime(2025, 12, 30, 10, 0, 5)
 INGESTED = datetime(2026, 1, 1, 0, 0, 0)
+RELEASE_DATE = date(2025, 12, 30)
 
 
 def row(icao="a1b2c3", event_time=T0, lat=47.4, lon=8.5, alt=1000.0, gs=250.0,
         track=90.0, vrate=500.0, callsign="SWR123", on_ground=False):
     return (icao, "HB-ABC", "A320", "SWISS", event_time, lat, lon, on_ground,
-            alt, gs, track, vrate, callsign, "v2025.12.30", INGESTED)
+            alt, gs, track, vrate, callsign, "v2025.12.30", RELEASE_DATE, INGESTED)
 
 
 @pytest.fixture
