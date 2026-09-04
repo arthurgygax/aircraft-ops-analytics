@@ -269,3 +269,69 @@ def test_a_single_observation_flight_is_still_a_flight(silver, airports):
     assert flight.n_observations == 1
     assert flight.duration_seconds == 0
     assert flight.first_seen_time == flight.last_seen_time
+
+
+# --- trajectory readiness (Phase 11) -----------------------------------------
+
+
+def test_observation_order_is_deterministic_when_timestamps_tie(silver):
+    """Silver makes ties impossible, but the order must not depend on read order."""
+    tied = [
+        obs(offset_s=0, lat=47.500, lon=8.500),
+        obs(offset_s=0, lat=47.400, lon=8.400),  # same instant
+        obs(offset_s=60, lat=47.600, lon=8.600),
+    ]
+
+    forward = to_flight_observations(silver(tied)).collect()
+    reversed_ = to_flight_observations(silver(list(reversed(tied)))).collect()
+
+    def order(rows):
+        return [(r.observation_seq, r.latitude) for r in sorted(rows, key=lambda x: x.observation_seq)]
+
+    assert order(forward) == order(reversed_)
+    assert order(forward)[0][1] == 47.400, "tie broken by position, not by read order"
+
+
+def test_observation_seq_is_a_total_order_within_each_flight(silver):
+    rows = [obs(offset_s=s) for s in (0, 30, 60, 90)] + [obs(offset_s=GAP_SECONDS + 10)]
+
+    points = to_flight_observations(silver(rows)).collect()
+
+    by_flight = {}
+    for p in points:
+        by_flight.setdefault(p.flight_id, []).append(p.observation_seq)
+    for seqs in by_flight.values():
+        assert sorted(seqs) == list(range(1, len(seqs) + 1))
+
+
+def test_the_track_carries_every_field_a_trajectory_needs(silver):
+    """flight_id, time, position, altitude, speed, track -- and nothing bulky."""
+    point = to_flight_observations(silver([obs()])).first()
+
+    assert set(point.asDict()) == {
+        "flight_id", "icao", "event_time", "observation_seq",
+        "latitude", "longitude", "altitude_ft", "on_ground",
+        "ground_speed_kt", "track_deg", "vertical_rate_fpm",
+        "callsign", "release_date",
+    }
+
+
+def test_a_position_without_altitude_or_speed_is_still_a_track_point(silver):
+    """0.7% of real points carry position only; they remain plottable."""
+    points = to_flight_observations(
+        silver([obs(alt=None, gs=None, track=None, vrate=None), obs(offset_s=60)])
+    )
+
+    assert points.count() == 2, "position-only points must not be dropped"
+
+
+def test_recomputation_produces_identical_track_rows(silver):
+    rows = [obs(offset_s=s) for s in (0, 30, 60)]
+
+    def snapshot():
+        return sorted(
+            (r.flight_id, r.observation_seq, r.latitude, r.longitude)
+            for r in to_flight_observations(silver(rows)).collect()
+        )
+
+    assert snapshot() == snapshot()

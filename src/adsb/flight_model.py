@@ -42,6 +42,35 @@ AUTHORITATIVE VS INFERRED FIELDS
         callsign; 65% of flights;
         departure/arrival airports -- matched geographically.
 
+THE TRACK DATASET AND ITS CONSUMERS
+    ``flight_observations`` is the flight-track dataset; there is no separate
+    ``flight_tracks`` copy, because measurement showed one would duplicate
+    1.29 GB and exclude nothing. Across all 44.6M points there are no missing,
+    out-of-range or null-island coordinates, no missing timestamps, and no
+    duplicate ``(flight_id, event_time)``.
+
+    Order it by ``flight_id, observation_seq``: that sequence is a gap-free
+    1..n within each flight. Its window orders by ``event_time, latitude,
+    longitude`` so the order stays reproducible even if two observations ever
+    shared a timestamp -- Silver's uniqueness rule prevents that today, but the
+    trajectory must not depend on which file Spark read first.
+
+    Nothing is dropped. 305,735 points (0.7%) carry a position but no altitude,
+    speed or track; they are still valid vertices and their columns are simply
+    null. Invalid coordinates are asserted against in ``adsb.quality`` rather
+    than silently repaired.
+
+    Retrieving one flight's trajectory takes ~2 s against the 44.6M-row table,
+    so it is deliberately left unpartitioned beyond ``release_date`` -- no
+    Z-ordering, no clustering, no down-sampling.
+
+    Expected readers: an interactive explorer (flight list from ``flights``,
+    one or a few trajectories from ``flight_observations``); BI tools, for
+    which the flight table is directly usable and the point table wants a day
+    or airport filter first; and the phase- and holding-detection logic, which
+    is why ``altitude_ft``, ``vertical_rate_fpm``, ``ground_speed_kt`` and
+    ``track_deg`` are carried per point.
+
 KNOWN LIMITATIONS
     * Airports resolve for 60.6% of flights, both ends for only 26.2%. The
       airport columns are nullable and frequently null; anything consuming them

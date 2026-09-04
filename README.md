@@ -156,6 +156,36 @@ Writes two tables from one segmentation pass, so the trajectory and the summary 
 | Reference lookup (readsb database, not transmitted) | `registration`, `aircraft_type`, `registered_owner` | 93 / 92 / 45% of flights |
 | Inferred by this pipeline | `flight_id`, `airline_icao`, departure/arrival airports | — |
 
+##### Flight tracks: the trajectory dataset
+
+`silver.flight_observations` **is** the flight-track dataset — there is no separate `flight_tracks` table, because building one would copy 1.29 GB and filter out nothing. Measured over all 44,619,824 points:
+
+| Check | Count |
+|---|---|
+| Missing position | 0 |
+| Coordinates out of range | 0 |
+| Null island (0,0) | 0 |
+| Missing timestamp or `flight_id` | 0 |
+| Duplicate `(flight_id, event_time)` | 0 |
+| Flights whose `observation_seq` isn't 1..n | 0 |
+
+**Ordering.** Order by `flight_id, observation_seq` (or `flight_id, event_time`). `observation_seq` is a gap-free 1..n per flight. Its window orders by `event_time, latitude, longitude` — the position is a tie-break so the order is reproducible even if two observations ever shared a timestamp, which Silver's `(icao, event_time)` uniqueness currently prevents. Two quality checks enforce it: `(flight_id, event_time)` unique and `(flight_id, observation_seq)` unique.
+
+**Nothing is dropped.** 305,735 points (0.7%) carry a position but no altitude, speed or track. They are still valid trajectory vertices and are kept; the columns are simply null. Invalid coordinates are *asserted against*, not silently repaired — if a future release contains any, the pipeline fails rather than quietly reshaping the data.
+
+**Measured retrieval** (44.6M rows, 1.29 GB, 68 files, local MinIO):
+
+| Access pattern | Time |
+|---|---|
+| Flight list for filtering (107,630 rows) | 0.30 s |
+| Filtered flight list (airline + date) | 0.63 s |
+| **One flight's trajectory, ordered** | **1.97 s** |
+| Five flights' trajectories | 1.18 s |
+
+Fast enough for an interactive dashboard, so the table is left unpartitioned beyond `release_date` and no Z-ordering or clustering was added. Revisit if the data grows by an order of magnitude.
+
+**Intended consumers.** Streamlit reads `silver.flights` for the filter lists and one or a few `flight_id`s from `silver.flight_observations` for the map. Power BI can consume `silver.flights` directly; the point-level table is large for import mode and is better filtered to a day or an airport first. Phase-detection and holding-pattern logic will read the point table ordered by `flight_id, observation_seq` — `altitude_ft`, `vertical_rate_fpm`, `ground_speed_kt` and `track_deg` are all carried for that purpose.
+
 **Known limitations.**
 
 - Airports resolve for **60.6%** of flights and **both** ends for only **26.2%**. Those columns are nullable and often null — consumers must show "unknown", not drop the flight.

@@ -89,6 +89,9 @@ FLIGHT_OBSERVATION_RULES: Mapping[str, str] = {
     "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
     "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
     "observation_seq starts at one": "observation_seq < 1",
+    # (0,0) is in the Gulf of Guinea: a real fix there is vanishingly unlikely
+    # and it is the classic signature of a bad position
+    "position is not null island": "latitude = 0 AND longitude = 0",
     "flight_id starts with the aircraft address": "NOT flight_id LIKE CONCAT(icao, '_%')",
 }
 
@@ -249,6 +252,9 @@ def validate_flight_observations(df: DataFrame) -> list[CheckResult]:
         df,
         FLIGHT_OBSERVATION_RULES,
         unique_keys=("flight_id", "event_time"),
+        # a unique sequence per flight is what makes "order by observation_seq"
+        # a total order rather than an arbitrary one
+        extra=[check_unique(df, ("flight_id", "observation_seq"))],
     )
 
 

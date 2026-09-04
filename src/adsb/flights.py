@@ -105,7 +105,13 @@ SELECT
         PARTITION BY icao, segment_no ORDER BY event_time
         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
     ) AS segment_callsign,
-    ROW_NUMBER() OVER (PARTITION BY icao, segment_no ORDER BY event_time) AS observation_seq
+    -- position breaks a tie so the trajectory order is reproducible even if
+    -- two observations ever share a timestamp; Silver's (icao, event_time)
+    -- uniqueness means that does not happen today, but the order must not
+    -- depend on which file Spark happened to read first
+    ROW_NUMBER() OVER (
+        PARTITION BY icao, segment_no ORDER BY event_time, latitude, longitude
+    ) AS observation_seq
 FROM segmented
 """
 
