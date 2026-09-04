@@ -83,6 +83,30 @@ It writes `s3a://adsb/silver/observations` (`ADSB_SILVER_URI`). Each transformat
 
 Coordinate ranges, timestamp normalization and column types were profiled and found already clean, so no no-op guards were added for them. Bad *values* are nulled rather than their rows dropped, so a glitched speed never costs a valid position fix.
 
+#### Inferred flight segments (new pipeline)
+
+```bash
+docker compose run --rm spark python -m adsb.flights
+```
+
+Writes `s3a://adsb/silver/flight_segments` (`ADSB_FLIGHTS_URI`): 737 segments from 300,865 observations across 224 aircraft, median 36 minutes.
+
+**These are not flight records.** Nothing here comes from a flight plan, an airline schedule or an airport database. A *flight segment* is a period during which one transponder was tracked continuously by the adsb.lol receiver network — an inference from radio observations, usually corresponding to one flight but not guaranteed to.
+
+**Algorithm.** Order each aircraft's observations by time; start a new segment when the gap to the previous observation exceeds 15 minutes. That is the whole rule.
+
+The threshold was measured, not guessed. Median gap between observations is 4 s and the 99th percentile is 35 s, so 15 minutes is far outside normal tracking cadence. Segments containing more than one callsign — the signature of two flights merged into one segment — hold steady at 14–19 for thresholds from 5 to 30 minutes, then jump to 47 at 60 minutes and 84 at 120. Below 10 minutes, single-observation fragments grow instead. Tune with `--gap-seconds`.
+
+Ground state is recorded but **not** used for segmentation: only 103 of 224 aircraft have any on-ground observation, so takeoff/landing is not reliably detectable. Callsign changes are not used either — of 249 changes, only 24 coincide with a gap over ten minutes, so splitting on them would invent boundaries mid-flight.
+
+**Limitations.**
+
+- A long coverage hole splits one real flight into two segments (oceanic legs especially).
+- An aircraft tracked continuously through a turnaround yields one segment covering two real flights — 15 segments carry more than one callsign, including a 19-hour US-domestic segment with two.
+- Segments are clipped by the processed day, so flights crossing midnight are truncated.
+- 6 segments have a single observation; `n_observations` is published so callers can decide what is usable.
+- Non-ICAO (`~`) addresses are TIS-B/ADS-R relays that can shadow real aircraft. Kept and flagged, not dropped.
+
 Run the tests the same way:
 
 ```bash

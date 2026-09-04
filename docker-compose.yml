@@ -53,6 +53,10 @@ services:
       minio:
         condition: service_healthy
     environment:
+      # Spark's default 1g driver heap OOMs on the Silver dedup (a window over
+      # every distinct icao+event_time) once the dataset is a few million rows.
+      # Raise it for bigger samples: SPARK_DRIVER_MEMORY=12g docker compose ...
+      PYSPARK_SUBMIT_ARGS: --driver-memory ${SPARK_DRIVER_MEMORY:-4g} pyspark-shell
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
@@ -60,6 +64,7 @@ services:
       ADSB_RAW_URI: s3a://${S3_BUCKET:-adsb}/raw/adsb
       ADSB_BRONZE_URI: s3a://${S3_BUCKET:-adsb}/bronze/observations
       ADSB_SILVER_URI: s3a://${S3_BUCKET:-adsb}/silver/observations
+      ADSB_FLIGHTS_URI: s3a://${S3_BUCKET:-adsb}/silver/flight_segments
     volumes:
       - ./data:/app/data
       - ./src:/app/src
