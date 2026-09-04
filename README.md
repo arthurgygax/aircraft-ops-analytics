@@ -132,6 +132,38 @@ Airport reference data is [OurAirports](https://ourairports.com/data/) (public d
 - Everything inherited from reconstruction: turnarounds merged into one segment, coverage-hole splits, midnight truncation.
 - Absolute counts are **not** calibrated against official figures and undercount wherever ADS-B coverage is thin.
 
+#### Flight analytical model (new pipeline)
+
+```bash
+docker compose run --rm spark python -m adsb.flight_model
+```
+
+Writes two tables from one segmentation pass, so the trajectory and the summary can never disagree about where a flight starts:
+
+- **`s3a://adsb/silver/flights`** — one row per inferred flight: identity, callsign, `airline_icao`, aircraft type, tracking bounds, summary statistics, and matched departure/arrival airports.
+- **`s3a://adsb/silver/flight_observations`** — one row per position report, tagged with `flight_id` and `observation_seq`. This exists because a trajectory cannot be redrawn from a summary; the flight table alone would make a map impossible.
+
+**`flight_id` = `<icao>_<yyyyMMddHHmmss of first observation>`**, e.g. `a4b41c_20251230002514`. Deterministic — a function of the data alone, so reprocessing a day regenerates identical ids. Both halves are needed: the address repeats across a day's flights, and the timestamp is not unique across aircraft.
+
+**What counts as a flight** is unchanged from reconstruction: a period of continuous tracking, split on gaps over 15 minutes. It is an observation artefact, usually but not always one real flight.
+
+**Which fields you can trust:**
+
+| Kind | Fields | Populated |
+|---|---|---|
+| Authoritative (transmitted) | `icao`, `event_time`, `latitude`, `longitude`, `on_ground` | 100% |
+| Authoritative (transmitted) | `ground_speed_kt` / `track_deg` / `altitude_ft` / `vertical_rate_fpm` | 99 / 95 / 88 / 89% |
+| Reference lookup (readsb database, not transmitted) | `registration`, `aircraft_type`, `registered_owner` | 93 / 92 / 45% of flights |
+| Inferred by this pipeline | `flight_id`, `airline_icao`, departure/arrival airports | — |
+
+**Known limitations.**
+
+- Airports resolve for **60.6%** of flights and **both** ends for only **26.2%**. Those columns are nullable and often null — consumers must show "unknown", not drop the flight.
+- `registered_owner` is the registry owner, **not** the operating airline: it is full of leasing trusts ("BANK OF UTAH TRUSTEE" appears on ~2,000 flights). Use `airline_icao` for airline questions.
+- `airline_icao` is a code, not a name. Resolving `SWR` → "Swiss" needs an airline reference dataset this project deliberately does not ship; the column is designed so a name can be joined on later.
+- `first_seen_time` / `last_seen_time` are when *tracking* started and stopped — not departure and arrival. Only `departure_time` / `arrival_time` mean that, and only when an airport matched.
+- Everything inherited from reconstruction: coverage-hole splits, turnarounds merged into one flight, clipping at midnight.
+
 #### Data quality checks (new pipeline)
 
 Every stage validates its own output before finishing, and the whole set can be re-run against the published tables:

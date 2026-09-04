@@ -68,7 +68,7 @@ DEFAULT_FLIGHTS_URI = os.environ.get(
 # See ALGORITHM above: measured, not guessed.
 GAP_SECONDS = 15 * 60
 
-_SEGMENT_SQL = """
+_ASSIGN_SQL = """
 WITH ordered AS (
     SELECT
         *,
@@ -88,21 +88,30 @@ segmented AS (
         SUM(is_break) OVER (
             PARTITION BY icao ORDER BY event_time
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS segment_no,
-        -- the callsign this segment reported first; segments spanning a
-        -- turnaround will have more than one, hence n_callsigns below
-        FIRST_VALUE(callsign) IGNORE NULLS OVER (
-            PARTITION BY icao, SUM(is_break) OVER (
-                PARTITION BY icao ORDER BY event_time
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            )
-            ORDER BY event_time
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-        ) AS segment_callsign
+        ) AS segment_no
     FROM marked
 )
 SELECT
-    CONCAT(icao, '_', DATE_FORMAT(MIN(event_time), 'yyyyMMddHHmmss')) AS segment_id,
+    *,
+    -- the flight identifier, stamped on every observation of the flight:
+    -- aircraft address + the instant it was first seen in this flight
+    CONCAT(
+        icao, '_',
+        DATE_FORMAT(MIN(event_time) OVER (PARTITION BY icao, segment_no), 'yyyyMMddHHmmss')
+    ) AS flight_id,
+    -- the callsign this flight reported first; flights spanning a turnaround
+    -- report more than one, hence n_callsigns downstream
+    FIRST_VALUE(callsign) IGNORE NULLS OVER (
+        PARTITION BY icao, segment_no ORDER BY event_time
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    ) AS segment_callsign,
+    ROW_NUMBER() OVER (PARTITION BY icao, segment_no ORDER BY event_time) AS observation_seq
+FROM segmented
+"""
+
+_AGGREGATE_SQL = """
+SELECT
+    flight_id                                   AS segment_id,
     icao,
     MAX(is_icao_address)                        AS is_icao_address,
     MAX(registration)                           AS registration,
@@ -131,18 +140,33 @@ SELECT
     MAX(ground_speed_kt)                        AS max_ground_speed_kt,
     MAX(release_tag)                            AS release_tag,
     MAX(release_date)                           AS release_date
-FROM segmented
-GROUP BY icao, segment_no
+FROM {source}
+GROUP BY flight_id, icao
 """
+
+
+def assign_flight_ids(
+    observations: DataFrame, gap_seconds: int = GAP_SECONDS
+) -> DataFrame:
+    """Stamp every observation with the flight it belongs to.
+
+    This is the segmentation itself. Aggregating it gives the flight-level
+    table; keeping it gives the point-level trajectory. Both come from this one
+    pass so they can never disagree about where a flight starts.
+    """
+    view = "silver_observations"
+    observations.createOrReplaceTempView(view)
+    return observations.sparkSession.sql(
+        _ASSIGN_SQL.format(source=view, gap=gap_seconds)
+    )
 
 
 def to_flight_segments(observations: DataFrame, gap_seconds: int = GAP_SECONDS) -> DataFrame:
     """Segment observations into inferred flights on temporal gaps."""
-    view = "silver_observations"
-    observations.createOrReplaceTempView(view)
-    return observations.sparkSession.sql(
-        _SEGMENT_SQL.format(source=view, gap=gap_seconds)
-    )
+    assigned = assign_flight_ids(observations, gap_seconds)
+    view = "assigned_observations"
+    assigned.createOrReplaceTempView(view)
+    return assigned.sparkSession.sql(_AGGREGATE_SQL.format(source=view))
 
 
 def write_flight_segments(

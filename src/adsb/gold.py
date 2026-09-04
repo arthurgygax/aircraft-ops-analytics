@@ -64,85 +64,13 @@ import os
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from adsb.airports import MATCH_RADIUS_KM, airport_movements  # noqa: F401  (public surface)
 from adsb.delta_io import write_delta
 from adsb.quality import assert_valid, report, validate_gold
 
 DEFAULT_GOLD_URI = os.environ.get(
     "ADSB_GOLD_URI", "s3a://adsb/gold/airport_daily_operations"
 )
-
-MATCH_RADIUS_KM = 5.0
-MAX_HEIGHT_ABOVE_AIRPORT_FT = 5000.0
-
-EARTH_RADIUS_KM = 6371.0
-
-# Each airport is expanded into the 3x3 block of one-degree cells around it so
-# an endpoint can hash-join to nearby airports instead of being compared
-# against all 5,281 of them. One degree is ~111 km, comfortably wider than the
-# match radius.
-_AIRPORT_CELLS_SQL = """
-SELECT
-    ident, iata_code, name, type, iso_country,
-    latitude_deg, longitude_deg, elevation_ft,
-    FLOOR(latitude_deg) + dlat  AS cell_lat,
-    FLOOR(longitude_deg) + dlon AS cell_lon
-FROM {airports}
-    LATERAL VIEW EXPLODE(ARRAY(-1, 0, 1)) t1 AS dlat
-    LATERAL VIEW EXPLODE(ARRAY(-1, 0, 1)) t2 AS dlon
-"""
-
-_MOVEMENTS_SQL = f"""
-WITH moving AS (
-    -- a segment that never changes position is a fixed transmitter or a
-    -- single stray observation, not an aircraft movement
-    SELECT * FROM {{segments}}
-    WHERE NOT (start_latitude = end_latitude AND start_longitude = end_longitude)
-),
-endpoints AS (
-    SELECT segment_id, icao, aircraft_type, operator, callsign, release_tag,
-           release_date,
-           'departure' AS movement_type,
-           start_time AS event_time, start_latitude AS latitude,
-           start_longitude AS longitude, start_altitude_ft AS altitude_ft
-    FROM moving
-    UNION ALL
-    SELECT segment_id, icao, aircraft_type, operator, callsign, release_tag,
-           release_date,
-           'arrival',
-           end_time, end_latitude, end_longitude, end_altitude_ft
-    FROM moving
-),
-candidates AS (
-    SELECT
-        e.*,
-        a.ident, a.iata_code, a.name AS airport_name, a.type AS airport_type,
-        a.iso_country, a.latitude_deg, a.longitude_deg, a.elevation_ft,
-        {EARTH_RADIUS_KM} * 2 * ASIN(SQRT(
-            POW(SIN(RADIANS(a.latitude_deg - e.latitude) / 2), 2)
-            + COS(RADIANS(e.latitude)) * COS(RADIANS(a.latitude_deg))
-            * POW(SIN(RADIANS(a.longitude_deg - e.longitude) / 2), 2)
-        )) AS distance_km
-    FROM endpoints e
-    JOIN {{airport_cells}} a
-      ON FLOOR(e.latitude) = a.cell_lat AND FLOOR(e.longitude) = a.cell_lon
-),
-qualifying AS (
-    SELECT * FROM candidates
-    WHERE distance_km <= {{radius_km}}
-      AND (
-            altitude_ft IS NULL  -- on the ground
-            OR altitude_ft - COALESCE(elevation_ft, 0) <= {{max_height_ft}}
-          )
-),
-nearest AS (
-    SELECT *, ROW_NUMBER() OVER (
-        PARTITION BY segment_id, movement_type
-        ORDER BY distance_km, ident  -- ident breaks ties deterministically
-    ) AS airport_rank
-    FROM qualifying
-)
-SELECT * FROM nearest WHERE airport_rank = 1
-"""
 
 _METRICS_SQL = """
 SELECT
@@ -166,29 +94,6 @@ SELECT
 FROM {movements}
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
 """
-
-
-def airport_movements(
-    segments: DataFrame,
-    airports: DataFrame,
-    radius_km: float = MATCH_RADIUS_KM,
-    max_height_ft: float = MAX_HEIGHT_ABOVE_AIRPORT_FT,
-) -> DataFrame:
-    """One row per inferred movement: a segment endpoint matched to an airport."""
-    spark = segments.sparkSession
-    segments.createOrReplaceTempView("flight_segments")
-    airports.createOrReplaceTempView("airports")
-    spark.sql(_AIRPORT_CELLS_SQL.format(airports="airports")).createOrReplaceTempView(
-        "airport_cells"
-    )
-    return spark.sql(
-        _MOVEMENTS_SQL.format(
-            segments="flight_segments",
-            airport_cells="airport_cells",
-            radius_km=radius_km,
-            max_height_ft=max_height_ft,
-        )
-    )
 
 
 def to_airport_metrics(movements: DataFrame) -> DataFrame:

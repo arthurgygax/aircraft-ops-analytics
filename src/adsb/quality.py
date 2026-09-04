@@ -81,6 +81,33 @@ FLIGHT_SEGMENT_RULES: Mapping[str, str] = {
     "end longitude within [-180, 180]": "end_longitude < -180 OR end_longitude > 180",
 }
 
+FLIGHT_OBSERVATION_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "icao is present": "icao IS NULL OR icao = ''",
+    "event_time is present": "event_time IS NULL",
+    "position is present": "latitude IS NULL OR longitude IS NULL",
+    "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
+    "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
+    "observation_seq starts at one": "observation_seq < 1",
+    "flight_id starts with the aircraft address": "NOT flight_id LIKE CONCAT(icao, '_%')",
+}
+
+FLIGHT_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "icao is present": "icao IS NULL OR icao = ''",
+    "flight does not end before it starts": "last_seen_time < first_seen_time",
+    "duration is not negative": "duration_seconds < 0",
+    "flight has at least one observation": "n_observations < 1",
+    # an airline code is three letters or it is absent; never a registration
+    "airline_icao is a three letter code":
+        "airline_icao IS NOT NULL AND NOT airline_icao RLIKE '^[A-Z]{3}$'",
+    "matched airports are within the search radius":
+        "departure_distance_km > 50 OR arrival_distance_km > 50",
+    "an airport match carries a time":
+        "(departure_airport_ident IS NOT NULL AND departure_time IS NULL)"
+        " OR (arrival_airport_ident IS NOT NULL AND arrival_time IS NULL)",
+}
+
 GOLD_RULES: Mapping[str, str] = {
     "operations_date is present": "operations_date IS NULL",
     "airport_ident is present": "airport_ident IS NULL OR airport_ident = ''",
@@ -216,12 +243,31 @@ def validate_gold(df: DataFrame) -> list[CheckResult]:
     )
 
 
+def validate_flight_observations(df: DataFrame) -> list[CheckResult]:
+    return validate(
+        "flight_observations",
+        df,
+        FLIGHT_OBSERVATION_RULES,
+        unique_keys=("flight_id", "event_time"),
+    )
+
+
+def validate_flights(df: DataFrame) -> list[CheckResult]:
+    return validate("flights", df, FLIGHT_RULES, unique_keys=("flight_id",))
+
+
 def main(argv: list[str] | None = None) -> None:
     """Validate every published table. Exits non-zero if any check fails."""
     import argparse
     import sys
 
     from adsb.bronze import DEFAULT_BRONZE_URI, read_bronze
+    from adsb.flight_model import (
+        DEFAULT_FLIGHT_OBSERVATIONS_URI,
+        DEFAULT_FLIGHTS_MODEL_URI,
+        read_flight_observations,
+        read_flights,
+    )
     from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
     from adsb.gold import DEFAULT_GOLD_URI, read_airport_metrics
     from adsb.silver import DEFAULT_SILVER_URI, read_silver
@@ -232,6 +278,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--silver", default=DEFAULT_SILVER_URI)
     parser.add_argument("--flights", default=DEFAULT_FLIGHTS_URI)
     parser.add_argument("--gold", default=DEFAULT_GOLD_URI)
+    parser.add_argument("--flight-observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
+    parser.add_argument("--flights-model", default=DEFAULT_FLIGHTS_MODEL_URI)
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-quality")
@@ -248,6 +296,13 @@ def main(argv: list[str] | None = None) -> None:
                 validate_flight_segments(segments)
                 + [check_observations_conserved(silver, segments)],
             ),
+            (
+                "flight_observations",
+                validate_flight_observations(
+                    read_flight_observations(spark, args.flight_observations)
+                ),
+            ),
+            ("flights", validate_flights(read_flights(spark, args.flights_model))),
             ("gold", validate_gold(read_airport_metrics(spark, args.gold))),
         ]
 
