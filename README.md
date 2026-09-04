@@ -107,6 +107,31 @@ Ground state is recorded but **not** used for segmentation: only 103 of 224 airc
 - 6 segments have a single observation; `n_observations` is published so callers can decide what is usable.
 - Non-ICAO (`~`) addresses are TIS-B/ADS-R relays that can shadow real aircraft. Kept and flagged, not dropped.
 
+#### Gold: inferred daily airport operations (new pipeline)
+
+```bash
+docker compose run --rm spark python -m adsb.airports   # once: airport reference data
+docker compose run --rm spark python -m adsb.gold
+```
+
+Writes `s3a://adsb/gold/airport_daily_operations` (`ADSB_GOLD_URI`), one row per airport per day: `arrivals`, `departures`, `total_operations`, `unique_aircraft`, plus airport identity and coordinates for mapping, and first/last operation times.
+
+**These are not official airport statistics.** They are counts of aircraft movements observed by a volunteer ADS-B receiver network and attributed to an airport by proximity. No flight plan, airline schedule or airport database is involved, and they will not reconcile with published movement counts. Every row carries `metric_source = 'adsb_inferred'` so the distinction survives into BI.
+
+**Attribution rule.** A segment's first observation becomes a *departure*, its last an *arrival*, when that endpoint is within **5 km** of a large or medium airport and either on the ground or below **5,000 ft above that airport's elevation**. Nearest qualifying airport wins.
+
+Both thresholds were calibrated on the data. Segments that began on the ground — by definition at an airport — lie a median 1.0 km and p90 2.3 km from the nearest large/medium airport; 5 km captures 93.7% of them and 10 km adds only 1.1%. Segments starting above 5,000 ft sit a median 46.4 km away, so the height test is what excludes overflights. Height is measured above airport elevation, not sea level, so Denver behaves like Amsterdam.
+
+Airport reference data is [OurAirports](https://ourairports.com/data/) (public domain), filtered to large and medium airports.
+
+**Limitations.**
+
+- Only large/medium airports are candidates; movements at small strips and heliports are uncounted, and an aircraft at one may be attributed to a larger airport within 5 km.
+- Segments that never move are excluded — this removes the fixed ground transmitters in the source (some typed `TWR`), which sit *at* airports and would otherwise inflate these very counts.
+- A segment can produce both a departure and an arrival at the same airport (10,944 do). Some are genuine local flights, some are coverage-split artifacts; they are not separated.
+- Everything inherited from reconstruction: turnarounds merged into one segment, coverage-hole splits, midnight truncation.
+- Absolute counts are **not** calibrated against official figures and undercount wherever ADS-B coverage is thin.
+
 Run the tests the same way:
 
 ```bash

@@ -65,6 +65,8 @@ services:
       ADSB_BRONZE_URI: s3a://${S3_BUCKET:-adsb}/bronze/observations
       ADSB_SILVER_URI: s3a://${S3_BUCKET:-adsb}/silver/observations
       ADSB_FLIGHTS_URI: s3a://${S3_BUCKET:-adsb}/silver/flight_segments
+      ADSB_AIRPORTS_URI: s3a://${S3_BUCKET:-adsb}/reference/airports.csv
+      ADSB_GOLD_URI: s3a://${S3_BUCKET:-adsb}/gold/airport_daily_operations
     volumes:
       - ./data:/app/data
       - ./src:/app/src

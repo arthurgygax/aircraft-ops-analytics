@@ -117,6 +117,11 @@ SELECT
     MAX_BY(longitude, event_time)               AS end_longitude,
     MIN_BY(on_ground, event_time)               AS started_on_ground,
     MAX_BY(on_ground, event_time)               AS ended_on_ground,
+    -- altitude at each endpoint, not just the maximum: airport attribution
+    -- needs to tell a real departure from a segment that merely started
+    -- mid-cruise over an airport
+    MIN_BY(altitude_ft, event_time)             AS start_altitude_ft,
+    MAX_BY(altitude_ft, event_time)             AS end_altitude_ft,
     MAX(CASE WHEN on_ground THEN 1 ELSE 0 END) = 1 AS saw_ground,
     MAX(altitude_ft)                            AS max_altitude_ft,
     MAX(ground_speed_kt)                        AS max_ground_speed_kt,
@@ -136,7 +141,13 @@ def to_flight_segments(observations: DataFrame, gap_seconds: int = GAP_SECONDS) 
 
 
 def write_flight_segments(segments: DataFrame, path: str, mode: str = "overwrite") -> None:
-    segments.write.format("delta").mode(mode).save(path)
+    writer = segments.write.format("delta").mode(mode)
+    if mode == "overwrite":
+        # Delta refuses a schema change by default. An overwrite replaces the
+        # table wholesale, so accepting the new schema there is the intent;
+        # append still gets the protection.
+        writer = writer.option("overwriteSchema", "true")
+    writer.save(path)
 
 
 def read_flight_segments(spark: SparkSession, path: str) -> DataFrame:

@@ -93,6 +93,9 @@ def test_segment_endpoints_come_from_first_and_last_observation(silver):
     assert segment.started_on_ground is True
     assert segment.ended_on_ground is False
     assert segment.saw_ground is True
+    # endpoint altitudes, which airport attribution needs
+    assert segment.start_altitude_ft == 10000.0
+    assert segment.end_altitude_ft == 10000.0
 
 
 def test_callsign_is_the_first_reported_one_and_changes_are_counted(silver):
