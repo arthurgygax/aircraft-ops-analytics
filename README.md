@@ -273,6 +273,71 @@ These are a police orbit, a rotorcraft on task, and a training aircraft flying c
 
 No synthetic "confidence score" is published. `circuits`, `span_km`, `n_observations` and `max_sample_gap_seconds` are the quality indicators, and they are the actual measurements rather than a number derived from them.
 
+### The Gold analytical model
+
+Five logical tables, joined on **`flight_id`** alone. No surrogate keys, no dimension tables — at this size a star schema would cost more than it saves.
+
+```
+gold.flights ──┬── gold.flight_phases     (phase intervals)
+   (spine)     ├── gold.flight_holds      (detected holds)
+               └── silver.flight_observations  (trajectory points)
+
+gold.airport_daily_operations   (airport × date, independent grain)
+```
+
+| Table | Grain | Rows | Physical location |
+|---|---|---|---|
+| `gold.flights` | one per flight | 107,630 | `s3a://adsb/gold/flights` |
+| `gold.flight_phases` | one per phase interval | 740,488 | `s3a://adsb/gold/flight_phases` |
+| `gold.flight_holds` | one per detected hold | 4,393 | `s3a://adsb/gold/flight_holds` |
+| `gold.airport_daily_operations` | one per airport × date | 1,212 | `s3a://adsb/gold/airport_daily_operations` |
+| *flight tracks* | one per observation | 44,619,824 | `s3a://adsb/silver/flight_observations` |
+
+**Two deliberate deviations from a literal `gold.*` naming**, both to avoid duplicating data:
+
+- **Trajectory points are served from `silver.flight_observations`**, not copied to `gold.flight_tracks`. Phase 11 measured that the table is already valid, ordered and fast enough (one flight in ~2 s), so a Gold copy would duplicate 1.29 GB and filter out zero rows.
+- **`gold.airport_daily_operations` is the airport daily metrics table.** It was created in Phase 7 and is now extended with hold metrics rather than renamed, since renaming would strand the existing table and break nothing usefully.
+
+#### Data dictionary
+
+**`gold.flights`** — the spine. Every filter the explorer offers resolves here.
+
+| Column | Type | Notes |
+|---|---|---|
+| `flight_id` | string | **primary key**, `<icao>_<yyyyMMddHHmmss>`, deterministic |
+| `flight_date` | date | date of the first observation — the analytical date |
+| `icao` | string | aircraft address, authoritative, 100% |
+| `registration`, `aircraft_type` | string | readsb database lookup, 93% / 92% |
+| `callsign` | string | 92.7% |
+| `airline_icao` | string | 3-letter ICAO designator from an airline-style callsign, **65.4%**; a code, not a name |
+| `registered_owner` | string | registry owner — **not the airline**, frequently a leasing trust |
+| `departure_airport_ident` / `_iata` / `_name` / `departure_time` | string / timestamp | inferred, **44.6%** |
+| `arrival_airport_ident` / `_iata` / `_name` / `arrival_time` | string / timestamp | inferred, **42.2%** |
+| `first_seen_time`, `last_seen_time` | timestamp | tracking bounds — *not* departure/arrival |
+| `duration_seconds`, `n_observations` | long | |
+| `max_altitude_ft`, `max_ground_speed_kt` | double | |
+| `saw_ground` | boolean | any ground observation |
+| `n_detected_holds`, `has_detected_hold`, `total_hold_seconds` | long / boolean / long | rollups from `gold.flight_holds`; zero, never null |
+| `release_tag`, `release_date` | string / date | provenance and partition key |
+
+**`gold.flight_phases`** — `flight_id`, `phase_seq`, `phase`, `start_time`, `end_time`, `duration_seconds`, `n_observations`, altitude statistics, `avg_ground_speed_kt`, `avg_vertical_rate_fpm`, `release_date`.
+
+**`gold.flight_holds`** — `flight_id`, `hold_seq`, `hold_start`, `hold_end`, `duration_seconds`, `n_observations`, `centroid_latitude/longitude`, `span_km`, altitude statistics, `turn_degrees`, `circuits`, `max_sample_gap_seconds`, `arrival_airport_ident/_iata`, `distance_to_arrival_airport_km`, `release_date`.
+
+**`gold.airport_daily_operations`** — `operations_date`, `airport_ident`, `airport_iata`, `airport_name`, `airport_type`, `iso_country`, `airport_latitude/longitude`, `arrivals`, `departures`, `total_operations`, `unique_aircraft`, `first/last_operation_time`, `flights_with_detected_holds`, `hold_rate`, `avg_hold_duration_seconds`, `release_tag`, `release_date`, `metric_source`.
+
+`hold_rate` is flights with a detected hold divided by arrivals, and is null when there were no arrivals to divide by rather than silently zero (191 of 1,382 airport-days).
+
+**Do not read `hold_rate` as a delay metric.** The airports with the highest rates on this sample are Vero Beach (27.4%), North Perry (35.6%), Centennial (16.4%) and Sanford (22.8%) — general-aviation and flight-training fields, where the circling being detected is circuit training, not holding. This is the Phase 13 limitation ("a circle is a circle") surfacing in aggregate. The column is honest about what it counts: flights whose trajectory contained sustained circling near their inferred arrival airport.
+
+#### Consuming it
+
+**Streamlit** reads `gold.flights` for the filter lists and the selected flight's metadata, then `gold.flight_phases` and `gold.flight_holds` for that flight, and pulls its trajectory from `silver.flight_observations` filtered on `flight_id`. No reconstruction, phase detection or hold detection happens at query time — all of it is precomputed.
+
+**Power BI** should import `gold.flights`, `gold.flight_phases`, `gold.flight_holds` and `gold.airport_daily_operations`; together they are well under a million rows and model naturally with `flight_id` relationships. It should **not** import the 44.6M-row point table — trajectories belong in the interactive explorer, and if a map is needed in BI, filter to a day or an airport first. Hourly statistics need no extra table: `departure_time` and `arrival_time` on `gold.flights` carry the hour.
+
+All columns are flat scalars — no nested structures, no serialized objects, no dashboard-specific transformations baked into the data.
+
 #### Data quality checks (new pipeline)
 
 Every stage validates its own output before finishing, and the whole set can be re-run against the published tables:

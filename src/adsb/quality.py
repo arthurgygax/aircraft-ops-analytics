@@ -146,6 +146,25 @@ FLIGHT_HOLD_RULES: Mapping[str, str] = {
     "hold_seq starts at one": "hold_seq < 1",
 }
 
+GOLD_FLIGHT_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "flight_date is present": "flight_date IS NULL",
+    "icao is present": "icao IS NULL OR icao = ''",
+    "flight does not end before it starts": "last_seen_time < first_seen_time",
+    "duration is not negative": "duration_seconds < 0",
+    "flight has at least one observation": "n_observations < 1",
+    "flight_date matches the first observation":
+        "flight_date <> DATE(first_seen_time)",
+    "hold rollups agree with each other":
+        "(n_detected_holds > 0) <> has_detected_hold",
+    "hold counts are not negative":
+        "n_detected_holds < 0 OR total_hold_seconds < 0",
+    "a flight with no holds has no hold time":
+        "n_detected_holds = 0 AND total_hold_seconds <> 0",
+    "airline_icao is a three letter code":
+        "airline_icao IS NOT NULL AND NOT airline_icao RLIKE '^[A-Z]{3}$'",
+}
+
 GOLD_RULES: Mapping[str, str] = {
     "operations_date is present": "operations_date IS NULL",
     "airport_ident is present": "airport_ident IS NULL OR airport_ident = ''",
@@ -167,6 +186,9 @@ GOLD_RULES: Mapping[str, str] = {
         "last_operation_time < first_operation_time",
     # the inference label must survive into BI; see adsb.gold
     "every row is labelled as inferred": "metric_source <> 'adsb_inferred'",
+    "flights with holds do not exceed arrivals":
+        "flights_with_detected_holds > arrivals",
+    "hold_rate is a proportion": "hold_rate < 0 OR hold_rate > 1",
 }
 
 
@@ -314,6 +336,22 @@ def validate_flight_holds(df: DataFrame) -> list[CheckResult]:
     )
 
 
+def check_references(child: DataFrame, parent: DataFrame, key: str = "flight_id") -> CheckResult:
+    """Count child rows whose key is absent from the parent table.
+
+    The Gold layer is joined on flight_id alone, so an orphan here means a
+    dashboard would show a phase, hold or track belonging to no flight.
+    """
+    orphans = (
+        child.select(key).distinct().join(parent.select(key), key, "left_anti").count()
+    )
+    return CheckResult(f"every {key} exists in gold.flights", orphans)
+
+
+def validate_gold_flights(df: DataFrame) -> list[CheckResult]:
+    return validate("gold_flights", df, GOLD_FLIGHT_RULES, unique_keys=("flight_id",))
+
+
 def main(argv: list[str] | None = None) -> None:
     """Validate every published table. Exits non-zero if any check fails."""
     import argparse
@@ -327,6 +365,7 @@ def main(argv: list[str] | None = None) -> None:
         read_flights,
     )
     from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
+    from adsb.gold import DEFAULT_GOLD_FLIGHTS_URI, read_gold_flights
     from adsb.holds import DEFAULT_HOLDS_URI, read_flight_holds
     from adsb.phases import DEFAULT_PHASES_URI, read_flight_phases
     from adsb.gold import DEFAULT_GOLD_URI, read_airport_metrics
@@ -342,6 +381,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--flights-model", default=DEFAULT_FLIGHTS_MODEL_URI)
     parser.add_argument("--phases", default=DEFAULT_PHASES_URI)
     parser.add_argument("--holds", default=DEFAULT_HOLDS_URI)
+    parser.add_argument("--gold-flights", default=DEFAULT_GOLD_FLIGHTS_URI)
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-quality")
@@ -349,6 +389,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         silver = read_silver(spark, args.silver)
         segments = read_flight_segments(spark, args.flights)
+        gold_flights = read_gold_flights(spark, args.gold_flights)
+        phases = read_flight_phases(spark, args.phases)
+        holds = read_flight_holds(spark, args.holds)
+        tracks = read_flight_observations(spark, args.flight_observations)
 
         checks = [
             ("bronze", validate_bronze(read_bronze(spark, args.bronze))),
@@ -365,15 +409,20 @@ def main(argv: list[str] | None = None) -> None:
                 ),
             ),
             ("flights", validate_flights(read_flights(spark, args.flights_model))),
-            (
-                "flight_phases",
-                validate_flight_phases(read_flight_phases(spark, args.phases)),
-            ),
-            (
-                "flight_holds",
-                validate_flight_holds(read_flight_holds(spark, args.holds)),
-            ),
+            ("flight_phases", validate_flight_phases(phases)),
+            ("flight_holds", validate_flight_holds(holds)),
+            ("gold_flights", validate_gold_flights(gold_flights)),
             ("gold", validate_gold(read_airport_metrics(spark, args.gold))),
+            # the Gold layer is joined on flight_id alone, so every child table
+            # must resolve against the spine
+            (
+                "gold referential integrity",
+                [
+                    check_references(phases, gold_flights),
+                    check_references(holds, gold_flights),
+                    check_references(tracks, gold_flights),
+                ],
+            ),
         ]
 
         for name, results in checks:
