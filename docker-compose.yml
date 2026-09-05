@@ -70,6 +70,7 @@ services:
       ADSB_FLIGHT_OBSERVATIONS_URI: s3a://${S3_BUCKET:-adsb}/silver/flight_observations
       ADSB_FLIGHTS_MODEL_URI: s3a://${S3_BUCKET:-adsb}/silver/flights
       ADSB_PHASES_URI: s3a://${S3_BUCKET:-adsb}/gold/flight_phases
+      ADSB_HOLDS_URI: s3a://${S3_BUCKET:-adsb}/gold/flight_holds
     volumes:
       - ./data:/app/data
       - ./src:/app/src

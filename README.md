@@ -228,6 +228,51 @@ The legacy Streamlit implementation was the starting point, but two of its assum
 
 **Limitations.** Taxi phases need ground observations, which only **43.9%** of flights have — the rest simply begin in `climb` or `cruise`. A flight tracked through a turnaround yields a mid-flight `taxi` run. `cruise` means level airborne flight at *any* altitude, so at low altitude it may be a level-off or a circuit. `unknown` appears where vertical rate is absent across a whole smoothing window, which is honest rather than a guess. Everything inherited from reconstruction propagates here.
 
+#### Detected holding patterns (new pipeline)
+
+```bash
+docker compose run --rm spark python -m adsb.holds
+```
+
+Writes `s3a://adsb/gold/flight_holds` (`ADSB_HOLDS_URI`): one row per stretch of sustained circling detected in a flight's trajectory.
+
+**What this is.** *Observed* circling — the aircraft turned through at least a full circle while staying inside a small area, which is what a holding pattern looks like from the outside. **What it is not:** evidence that the aircraft was *instructed* to hold, was flying a published procedure, or was delayed. No flight plan, clearance or ATC record is involved, only positions and headings. The table describes ADS-B-derived observations, never holding instructions.
+
+**Algorithm.** For each airborne observation, take the signed heading change from the previous one, wrapped into (−180, 180] so 359° → 1° reads as +2° and not −358°. Sum those changes over a **centred** six-minute window — centred rather than trailing, because a trailing window only marks a point once a whole circle has already accumulated behind it, which clips the start of every hold. The sum is **signed**, so a left turn cancelled by an equal right turn is an S-bend, not circling. Mark observations whose window reaches a full circle, collapse consecutive marks into intervals, then keep only intervals that are also sustained, confined and level.
+
+Geometry stays deliberately primitive: a bounding box converted to kilometres with a flat-earth approximation, accurate to well under a percent over the tens of kilometres a hold spans. No geospatial library, and a reviewer can check the arithmetic by hand.
+
+| Threshold | Value | Why |
+|---|---|---|
+| `TURN_WINDOW_SECONDS` | 360 | one circuit takes ~4 min low, up to 6 min higher |
+| `MIN_TURN_DEGREES` | 360 | a base-to-final turn is ~90°, a procedure turn 180–270°, so a full circle already excludes ordinary approach manoeuvring |
+| `MIN_DURATION_SECONDS` | 240 | one full low-level circuit |
+| `MAX_SPAN_KM` | 25 | a racetrack spans roughly 15–20 km |
+| `MAX_ALTITUDE_RANGE_FT` | 4000 | holds are level or step down in a stack; a spiral descent is not a hold |
+
+Turning is normally gentle in this data — per-step turn has a median of 0.1° and a p90 of 4.3° — so sustained circling stands out. A six-minute signed turn reaching a full circle occurs somewhere in 7,128 of 97,394 flights (7.3%) before any of the filters above.
+
+**What it found on the sample**: 4,393 detected holds across 3,017 flights. Median 5.9 minutes, 1.8 circuits, 5.8 km span, 1,782 ft. Only **2.88% of arriving flights** have one, so normal approaches are not being swept up.
+
+**What manual inspection revealed — the limitation is not hypothetical.** Ranking detections by circuits, the strongest are *not* airline holds:
+
+| Callsign | Type | Route | Detected |
+|---|---|---|---|
+| POL24 | B429 (police helicopter) | BWU → BWU | 37.7 min, 6.9 circuits, 1,097 ft |
+| TRP1 | A139 (AW139 helicopter) | MTN → MTN | 78.6 min, 4.8 circuits, 1,096 ft |
+| LFA320 | C172 | SFB → SFB | 8.3 min, 4.5 circuits, 3,330 ft |
+
+These are a police orbit, a rotorcraft on task, and a training aircraft flying circuits. The median detection altitude of 1,782 ft points the same way: real airline holding is usually flown at 6,000–20,000 ft. **The detector reliably finds circling; circling is not the same thing as holding.** Two obvious further discriminators — excluding flights whose departure and arrival airport are the same, and an altitude floor — are deliberately *not* applied, because choosing them needs evidence this phase does not have.
+
+**Known limitations — read before trusting a row.**
+
+- **A circle is a circle.** Aerial survey, photography, training circuits and police or medical orbits produce identical geometry and dominate the strongest detections, as the table above shows. Nothing in ADS-B distinguishes their intent from a hold's.
+- Airport association is the flight's **own inferred arrival airport**, not a geometric nearest-airport search, and is null whenever that inference failed (arrival airports resolve for ~42% of flights). `distance_to_arrival_airport_km` separates terminal-area circling from en-route.
+- A hold sampled too sparsely may be missed entirely; `max_sample_gap_seconds` exposes that per row.
+- Nothing separates a hold from a go-around that circles back, or from vectoring that happens to close a full circle.
+
+No synthetic "confidence score" is published. `circuits`, `span_km`, `n_observations` and `max_sample_gap_seconds` are the quality indicators, and they are the actual measurements rather than a number derived from them.
+
 #### Data quality checks (new pipeline)
 
 Every stage validates its own output before finishing, and the whole set can be re-run against the published tables:

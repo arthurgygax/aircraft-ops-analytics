@@ -128,6 +128,24 @@ FLIGHT_PHASE_RULES: Mapping[str, str] = {
         "phase IN ('taxi_out','taxi_in','taxi') AND max_altitude_ft IS NOT NULL",
 }
 
+FLIGHT_HOLD_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "hold_start is present": "hold_start IS NULL",
+    "hold_end is present": "hold_end IS NULL",
+    "hold does not end before it starts": "hold_end < hold_start",
+    "duration agrees with the timestamps":
+        "duration_seconds <> UNIX_TIMESTAMP(hold_end) - UNIX_TIMESTAMP(hold_start)",
+    "hold is sustained": "duration_seconds < 240",
+    "hold is spatially confined": "span_km > 25",
+    "hold completed at least one circuit": "circuits < 1",
+    "hold is roughly level": "max_altitude_ft - min_altitude_ft > 4000",
+    "centroid latitude within [-90, 90]":
+        "centroid_latitude < -90 OR centroid_latitude > 90",
+    "centroid longitude within [-180, 180]":
+        "centroid_longitude < -180 OR centroid_longitude > 180",
+    "hold_seq starts at one": "hold_seq < 1",
+}
+
 GOLD_RULES: Mapping[str, str] = {
     "operations_date is present": "operations_date IS NULL",
     "airport_ident is present": "airport_ident IS NULL OR airport_ident = ''",
@@ -290,6 +308,12 @@ def validate_flight_phases(df: DataFrame) -> list[CheckResult]:
     )
 
 
+def validate_flight_holds(df: DataFrame) -> list[CheckResult]:
+    return validate(
+        "flight_holds", df, FLIGHT_HOLD_RULES, unique_keys=("flight_id", "hold_seq")
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Validate every published table. Exits non-zero if any check fails."""
     import argparse
@@ -303,6 +327,7 @@ def main(argv: list[str] | None = None) -> None:
         read_flights,
     )
     from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
+    from adsb.holds import DEFAULT_HOLDS_URI, read_flight_holds
     from adsb.phases import DEFAULT_PHASES_URI, read_flight_phases
     from adsb.gold import DEFAULT_GOLD_URI, read_airport_metrics
     from adsb.silver import DEFAULT_SILVER_URI, read_silver
@@ -316,6 +341,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--flight-observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
     parser.add_argument("--flights-model", default=DEFAULT_FLIGHTS_MODEL_URI)
     parser.add_argument("--phases", default=DEFAULT_PHASES_URI)
+    parser.add_argument("--holds", default=DEFAULT_HOLDS_URI)
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-quality")
@@ -342,6 +368,10 @@ def main(argv: list[str] | None = None) -> None:
             (
                 "flight_phases",
                 validate_flight_phases(read_flight_phases(spark, args.phases)),
+            ),
+            (
+                "flight_holds",
+                validate_flight_holds(read_flight_holds(spark, args.holds)),
             ),
             ("gold", validate_gold(read_airport_metrics(spark, args.gold))),
         ]
