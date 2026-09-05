@@ -298,6 +298,27 @@ docker compose run --rm explorer pytest tests/test_app_data.py -q
 
 > The legacy `app` service (`src/app.py`, port 8501) is the original OpenSky Streamlit application. It is superseded by the explorer and left untouched.
 
+### Power BI
+
+The Gold layer feeds Power BI through a small set of single-file Parquet
+extracts, because Power BI Desktop has no connector for Delta on S3-compatible
+storage:
+
+```bash
+docker compose run --rm spark python -m adsb.bi_export
+```
+
+That writes six files (45 MB total) to `data/powerbi/`, which Power BI opens
+with **Get Data → Parquet**. Trajectories are exported as a thinned sample —
+one point per 30 s, and only for the 3,017 flights with a detected hold —
+because the full 44.6M-row point table exceeds what Power BI's map visuals can
+render anyway; full-fidelity trajectories live in the Streamlit explorer.
+
+**[docs/powerbi.md](docs/powerbi.md)** has the complete setup: table list,
+relationships, DAX measures, Power Query steps and page-by-page dashboard
+specifications. There is deliberately no `.pbix` in the repository — see the
+last section of that document for why.
+
 ### The Gold analytical model
 
 Five logical tables, joined on **`flight_id`** alone. No surrogate keys, no dimension tables — at this size a star schema would cost more than it saves.
