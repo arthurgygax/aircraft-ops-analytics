@@ -273,6 +273,31 @@ These are a police orbit, a rotorcraft on task, and a training aircraft flying c
 
 No synthetic "confidence score" is published. `circuits`, `span_km`, `n_observations` and `max_sample_gap_seconds` are the quality indicators, and they are the actual measurements rather than a number derived from them.
 
+### Flight Explorer (the interactive app)
+
+```bash
+docker compose up -d minio
+docker compose up -d explorer     # http://localhost:8502
+```
+
+A two-tab Streamlit app over the Gold tables. It is purely a **consumer**: reconstruction, phase detection and hold detection all happened in the pipeline, and nothing is recomputed per request.
+
+**Flight Explorer** — cascading sidebar filters (date, from, to, airline, aircraft, plus a callsign/aircraft search), a flight picker, metric cards, the trajectory on a map coloured by detected phase, a phase timeline with a table, an altitude/ground-speed profile, and any detected holds marked on the map and listed with their circuits, span, altitude and airport association.
+
+**Airport Operations** — pick an airport for arrivals, departures, total operations, unique aircraft, traffic by hour of day, per-day operations and detected-holding statistics.
+
+It runs **without Spark**: the app reads Delta directly with [delta-rs](https://delta-io.github.io/delta-rs/), so the container starts in seconds and has no JVM. Measured against the real sample: the Gold tables load in ~2 s in total and one flight's trajectory in ~3 s out of 44.6M rows, using predicate pushdown on `flight_id`. The four small tables are cached with `@st.cache_data`; trajectories are fetched per flight and cached individually.
+
+Configuration is the same environment as the pipeline — `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`. Drop `S3_ENDPOINT` and it talks to AWS instead. Nothing is hardcoded to a particular airport.
+
+Run its tests with:
+
+```bash
+docker compose run --rm explorer pytest tests/test_app_data.py -q
+```
+
+> The legacy `app` service (`src/app.py`, port 8501) is the original OpenSky Streamlit application. It is superseded by the explorer and left untouched.
+
 ### The Gold analytical model
 
 Five logical tables, joined on **`flight_id`** alone. No surrogate keys, no dimension tables — at this size a star schema would cost more than it saves.

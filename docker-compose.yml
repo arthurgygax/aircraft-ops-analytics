@@ -78,5 +78,25 @@ services:
       - ./tests:/app/tests
       - ./pyproject.toml:/app/pyproject.toml
 
+  # Flight Explorer: reads the Gold tables, computes nothing.
+  explorer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-adsb}
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./app:/app/app
+      - ./tests:/app/tests
+      - ./pyproject.toml:/app/pyproject.toml
+
 volumes:
   minio-data:

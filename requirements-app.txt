@@ -1,0 +1,6 @@
+streamlit
+plotly>=6
+deltalake
+pandas
+pyarrow
+pytest

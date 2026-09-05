@@ -3,13 +3,15 @@ import json
 
 import pytest
 
-pyspark = pytest.importorskip("pyspark", reason="Spark tests run in the spark container")
-
-from adsb.spark_explore import build_session  # noqa: E402
+# NOT skipped at module scope: this file is also collected in the app
+# container, which has no Spark. The skip belongs to the fixtures that need it.
 
 
 @pytest.fixture(scope="session")
 def spark():
+    pytest.importorskip("pyspark", reason="Spark tests run in the spark container")
+    from adsb.spark_explore import build_session
+
     session = build_session("adsb-tests")
     yield session
     session.stop()
