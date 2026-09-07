@@ -16,17 +16,18 @@ from a generic checklist:
   an unexpected path. Empty-string checks exist because that actually
   happened.
 * **Invariants that hold by construction and would otherwise go unverified.**
-  Silver guarantees one row per ``(icao, event_time)``; segments must not end
-  before they start; every observation must land in exactly one segment;
-  ``arrivals + departures`` must equal ``total_operations``.
-* **Coordinate ranges.** Silver deliberately does not *correct* coordinates,
-  because profiling found none out of range. That is a statement about one
-  release, so it is asserted rather than assumed: bad input fails loudly
-  instead of being silently reshaped.
+  One observation per ``(icao, event_time)``; every observation lands in
+  exactly one flight; ``arrivals + departures`` must equal
+  ``total_operations``.
+* **Coordinate ranges.** The pipeline deliberately does not *correct*
+  coordinates, because profiling found none out of range. That is a statement
+  about two releases, so it is asserted rather than assumed: bad input fails
+  loudly instead of being silently reshaped.
 
-Layer rules differ on purpose. Bronze keeps the source's implausible values
-(1800-knot light aircraft and all), so it is only checked for structural
-integrity. Silver promises those values are gone, so it is checked for them.
+``collisions_resolved`` is not a pass/fail rule but a published number: how
+many same-timestamp receptions the decoder collapsed. It used to be visible
+only as the difference between two row counts, and it is the tripwire that
+would catch the same raw file entering the pipeline twice.
 """
 
 from __future__ import annotations
@@ -35,72 +36,64 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
 
 # Each entry is "invariant name" -> "SQL predicate matching rows that BREAK it".
 # NULL-safe by construction: `latitude < -90` is NULL for a NULL latitude, and
 # CASE WHEN NULL counts as no violation, so range rules ignore missing values
 # and the explicit `IS NULL` rules police required fields.
 
-BRONZE_RULES: Mapping[str, str] = {
+OBSERVATION_RULES: Mapping[str, str] = {
+    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "flight_id starts with the aircraft address":
+        "NOT flight_id LIKE CONCAT(icao, '_%')",
     "icao is present": "icao IS NULL OR icao = ''",
-    "event_time is present": "event_time IS NULL",
-    "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
-    "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
-    "source_file is recorded": "source_file IS NULL OR source_file = ''",
-    "release_tag is recorded": "release_tag IS NULL OR release_tag = ''",
-    "ingested_at is recorded": "ingested_at IS NULL",
-}
-
-SILVER_RULES: Mapping[str, str] = {
-    "icao is present": "icao IS NULL OR icao = ''",
-    "event_time is present": "event_time IS NULL",
-    "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
-    "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
     "is_icao_address is set": "is_icao_address IS NULL",
-    # Silver's own promises, so a regression in the cleaning shows up here
+    "event_time is present": "event_time IS NULL",
+    "observation_seq starts at one": "observation_seq < 1",
+    "position is present": "latitude IS NULL OR longitude IS NULL",
+    "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
+    "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
+    # (0,0) is in the Gulf of Guinea: a real fix there is vanishingly unlikely
+    # and it is the classic signature of a bad position
+    "position is not null island": "latitude = 0 AND longitude = 0",
+    # the decoder's own promises, so a regression in the cleaning shows up here
     "implausible ground speed removed": "ground_speed_kt > 700",
     "implausible vertical rate removed": "ABS(vertical_rate_fpm) > 20000",
     "blank callsign normalized to NULL": "callsign = ''",
     "release_tag is recorded": "release_tag IS NULL OR release_tag = ''",
+    "release_date is recorded": "release_date IS NULL",
 }
 
-FLIGHT_SEGMENT_RULES: Mapping[str, str] = {
-    "segment_id is present": "segment_id IS NULL OR segment_id = ''",
-    "icao is present": "icao IS NULL OR icao = ''",
-    "start_time is present": "start_time IS NULL",
-    "end_time is present": "end_time IS NULL",
-    "segment does not end before it starts": "end_time < start_time",
-    "duration is not negative": "duration_seconds < 0",
-    "segment has at least one observation": "n_observations < 1",
-    "duration agrees with the timestamps":
-        "duration_seconds <> UNIX_TIMESTAMP(end_time) - UNIX_TIMESTAMP(start_time)",
-    "start latitude within [-90, 90]": "start_latitude < -90 OR start_latitude > 90",
-    "end latitude within [-90, 90]": "end_latitude < -90 OR end_latitude > 90",
-    "start longitude within [-180, 180]":
-        "start_longitude < -180 OR start_longitude > 180",
-    "end longitude within [-180, 180]": "end_longitude < -180 OR end_longitude > 180",
-}
-
-FLIGHT_OBSERVATION_RULES: Mapping[str, str] = {
+MOVEMENT_RULES: Mapping[str, str] = {
     "flight_id is present": "flight_id IS NULL OR flight_id = ''",
-    "icao is present": "icao IS NULL OR icao = ''",
+    "movement_type is arrival or departure":
+        "movement_type NOT IN ('arrival', 'departure')",
+    "an airport is matched": "ident IS NULL OR ident = ''",
     "event_time is present": "event_time IS NULL",
-    "position is present": "latitude IS NULL OR longitude IS NULL",
+    "the match is within the search radius": "distance_km > 50",
     "latitude within [-90, 90]": "latitude < -90 OR latitude > 90",
     "longitude within [-180, 180]": "longitude < -180 OR longitude > 180",
-    "observation_seq starts at one": "observation_seq < 1",
-    # (0,0) is in the Gulf of Guinea: a real fix there is vanishingly unlikely
-    # and it is the classic signature of a bad position
-    "position is not null island": "latitude = 0 AND longitude = 0",
-    "flight_id starts with the aircraft address": "NOT flight_id LIKE CONCAT(icao, '_%')",
 }
 
 FLIGHT_RULES: Mapping[str, str] = {
     "flight_id is present": "flight_id IS NULL OR flight_id = ''",
+    "flight_date is present": "flight_date IS NULL",
     "icao is present": "icao IS NULL OR icao = ''",
     "flight does not end before it starts": "last_seen_time < first_seen_time",
     "duration is not negative": "duration_seconds < 0",
+    "duration agrees with the timestamps":
+        "duration_seconds <> UNIX_TIMESTAMP(last_seen_time)"
+        " - UNIX_TIMESTAMP(first_seen_time)",
     "flight has at least one observation": "n_observations < 1",
+    "flight_date matches the first observation":
+        "flight_date <> DATE(first_seen_time)",
+    "first latitude within [-90, 90]": "first_latitude < -90 OR first_latitude > 90",
+    "last latitude within [-90, 90]": "last_latitude < -90 OR last_latitude > 90",
+    "first longitude within [-180, 180]":
+        "first_longitude < -180 OR first_longitude > 180",
+    "last longitude within [-180, 180]":
+        "last_longitude < -180 OR last_longitude > 180",
     # an airline code is three letters or it is absent; never a registration
     "airline_icao is a three letter code":
         "airline_icao IS NOT NULL AND NOT airline_icao RLIKE '^[A-Z]{3}$'",
@@ -109,6 +102,12 @@ FLIGHT_RULES: Mapping[str, str] = {
     "an airport match carries a time":
         "(departure_airport_ident IS NOT NULL AND departure_time IS NULL)"
         " OR (arrival_airport_ident IS NOT NULL AND arrival_time IS NULL)",
+    "hold rollups agree with each other":
+        "(n_detected_holds > 0) <> has_detected_hold",
+    "hold counts are not negative":
+        "n_detected_holds < 0 OR total_hold_seconds < 0",
+    "a flight with no holds has no hold time":
+        "n_detected_holds = 0 AND total_hold_seconds <> 0",
 }
 
 FLIGHT_PHASE_RULES: Mapping[str, str] = {
@@ -146,26 +145,7 @@ FLIGHT_HOLD_RULES: Mapping[str, str] = {
     "hold_seq starts at one": "hold_seq < 1",
 }
 
-GOLD_FLIGHT_RULES: Mapping[str, str] = {
-    "flight_id is present": "flight_id IS NULL OR flight_id = ''",
-    "flight_date is present": "flight_date IS NULL",
-    "icao is present": "icao IS NULL OR icao = ''",
-    "flight does not end before it starts": "last_seen_time < first_seen_time",
-    "duration is not negative": "duration_seconds < 0",
-    "flight has at least one observation": "n_observations < 1",
-    "flight_date matches the first observation":
-        "flight_date <> DATE(first_seen_time)",
-    "hold rollups agree with each other":
-        "(n_detected_holds > 0) <> has_detected_hold",
-    "hold counts are not negative":
-        "n_detected_holds < 0 OR total_hold_seconds < 0",
-    "a flight with no holds has no hold time":
-        "n_detected_holds = 0 AND total_hold_seconds <> 0",
-    "airline_icao is a three letter code":
-        "airline_icao IS NOT NULL AND NOT airline_icao RLIKE '^[A-Z]{3}$'",
-}
-
-GOLD_RULES: Mapping[str, str] = {
+AIRPORT_OPERATION_RULES: Mapping[str, str] = {
     "operations_date is present": "operations_date IS NULL",
     "airport_ident is present": "airport_ident IS NULL OR airport_ident = ''",
     "arrivals and departures sum to total_operations":
@@ -184,7 +164,7 @@ GOLD_RULES: Mapping[str, str] = {
         " OR DATE(last_operation_time) <> operations_date",
     "last operation is not before the first":
         "last_operation_time < first_operation_time",
-    # the inference label must survive into BI; see adsb.gold
+    # the inference label must survive into BI; see adsb.airports
     "every row is labelled as inferred": "metric_source <> 'adsb_inferred'",
     "flights with holds do not exceed arrivals":
         "flights_with_detected_holds > arrivals",
@@ -232,21 +212,65 @@ def check_not_empty(df: DataFrame) -> CheckResult:
 
 
 def check_unique(df: DataFrame, keys: Sequence[str]) -> CheckResult:
-    """Count surplus rows beyond one per key combination."""
-    total = df.count()
-    distinct = df.select(*keys).distinct().count()
-    return CheckResult(f"{' + '.join(keys)} is unique", total - distinct)
+    """Count surplus rows beyond one per key combination.
+
+    One Spark action, not two. Counting the rows and then counting the
+    distinct keys separately scans the table twice, which on a 44M-row table
+    measured at 44 s -- three quarters of a stage's whole validation cost. A
+    single grouped aggregation gives the same number from one shuffle.
+    """
+    surplus = (
+        df.groupBy(*keys)
+        .count()
+        .where(F.col("count") > 1)
+        .agg(F.coalesce(F.sum(F.col("count") - 1), F.lit(0)).alias("surplus"))
+        .first()
+        .surplus
+    )
+    return CheckResult(f"{' + '.join(keys)} is unique", int(surplus))
 
 
 def check_observations_conserved(
-    observations: DataFrame, segments: DataFrame
+    observations: DataFrame, flights: DataFrame
 ) -> CheckResult:
-    """Every observation must land in exactly one segment -- no loss, no double count."""
-    in_segments = segments.selectExpr("SUM(n_observations) AS total").first().total or 0
+    """Every observation lands in exactly one flight -- no loss, no double count."""
+    in_flights = flights.selectExpr("SUM(n_observations) AS total").first().total or 0
     return CheckResult(
-        "every observation appears in exactly one segment",
-        abs(observations.count() - int(in_segments)),
+        "every observation appears in exactly one flight",
+        abs(observations.count() - int(in_flights)),
     )
+
+
+def check_references(
+    child: DataFrame, parent: DataFrame, key: str = "flight_id"
+) -> CheckResult:
+    """Count child rows whose key is absent from the flight table.
+
+    Everything is joined on flight_id alone, so an orphan here means a
+    dashboard would show a phase, hold or track belonging to no flight.
+    """
+    orphans = (
+        child.select(key).distinct().join(parent.select(key), key, "left_anti").count()
+    )
+    return CheckResult(f"every {key} exists in flights", orphans)
+
+
+def collisions_resolved(aircraft: DataFrame, observations: DataFrame) -> tuple[int, int]:
+    """(raw trace points, observations kept) for one release.
+
+    The difference is how many same-timestamp receptions the decoder collapsed.
+    Published rather than inferred: a sudden jump means either a change in the
+    source's relay mix or the same raw file reaching the pipeline twice, and
+    the second of those must not look like the first.
+    """
+    points = (
+        aircraft.select(F.coalesce(F.size("trace"), F.lit(0)).alias("n"))
+        .agg(F.sum("n").alias("total"))
+        .first()
+        .total
+        or 0
+    )
+    return int(points), observations.count()
 
 
 def validate(
@@ -283,35 +307,22 @@ def assert_valid(name: str, results: Sequence[CheckResult]) -> None:
         )
 
 
-def validate_bronze(df: DataFrame) -> list[CheckResult]:
-    return validate("bronze", df, BRONZE_RULES)
-
-
-def validate_silver(df: DataFrame) -> list[CheckResult]:
-    return validate("silver", df, SILVER_RULES, unique_keys=("icao", "event_time"))
-
-
-def validate_flight_segments(df: DataFrame) -> list[CheckResult]:
+def validate_observations(df: DataFrame) -> list[CheckResult]:
     return validate(
-        "flight_segments", df, FLIGHT_SEGMENT_RULES, unique_keys=("segment_id",)
-    )
-
-
-def validate_gold(df: DataFrame) -> list[CheckResult]:
-    return validate(
-        "gold", df, GOLD_RULES, unique_keys=("operations_date", "airport_ident")
-    )
-
-
-def validate_flight_observations(df: DataFrame) -> list[CheckResult]:
-    return validate(
-        "flight_observations",
+        "observations",
         df,
-        FLIGHT_OBSERVATION_RULES,
-        unique_keys=("flight_id", "event_time"),
+        OBSERVATION_RULES,
+        # the manufactured key: one row per reception instant per aircraft
+        unique_keys=("icao", "event_time"),
         # a unique sequence per flight is what makes "order by observation_seq"
         # a total order rather than an arbitrary one
         extra=[check_unique(df, ("flight_id", "observation_seq"))],
+    )
+
+
+def validate_movements(df: DataFrame) -> list[CheckResult]:
+    return validate(
+        "movements", df, MOVEMENT_RULES, unique_keys=("flight_id", "movement_type")
     )
 
 
@@ -336,20 +347,13 @@ def validate_flight_holds(df: DataFrame) -> list[CheckResult]:
     )
 
 
-def check_references(child: DataFrame, parent: DataFrame, key: str = "flight_id") -> CheckResult:
-    """Count child rows whose key is absent from the parent table.
-
-    The Gold layer is joined on flight_id alone, so an orphan here means a
-    dashboard would show a phase, hold or track belonging to no flight.
-    """
-    orphans = (
-        child.select(key).distinct().join(parent.select(key), key, "left_anti").count()
+def validate_airport_operations(df: DataFrame) -> list[CheckResult]:
+    return validate(
+        "airport_daily_operations",
+        df,
+        AIRPORT_OPERATION_RULES,
+        unique_keys=("operations_date", "airport_ident"),
     )
-    return CheckResult(f"every {key} exists in gold.flights", orphans)
-
-
-def validate_gold_flights(df: DataFrame) -> list[CheckResult]:
-    return validate("gold_flights", df, GOLD_FLIGHT_RULES, unique_keys=("flight_id",))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -357,70 +361,57 @@ def main(argv: list[str] | None = None) -> None:
     import argparse
     import sys
 
-    from adsb.bronze import DEFAULT_BRONZE_URI, read_bronze
-    from adsb.flight_model import (
-        DEFAULT_FLIGHT_OBSERVATIONS_URI,
-        DEFAULT_FLIGHTS_MODEL_URI,
-        read_flight_observations,
-        read_flights,
+    from adsb.airports import (
+        DEFAULT_AIRPORT_OPERATIONS_URI,
+        DEFAULT_MOVEMENTS_URI,
+        read_airport_operations,
+        read_movements,
     )
-    from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
-    from adsb.gold import DEFAULT_GOLD_FLIGHTS_URI, read_gold_flights
+    from adsb.flights import DEFAULT_FLIGHTS_URI, read_flights
     from adsb.holds import DEFAULT_HOLDS_URI, read_flight_holds
+    from adsb.observations import DEFAULT_OBSERVATIONS_URI, read_observations
     from adsb.phases import DEFAULT_PHASES_URI, read_flight_phases
-    from adsb.gold import DEFAULT_GOLD_URI, read_airport_metrics
-    from adsb.silver import DEFAULT_SILVER_URI, read_silver
     from adsb.spark_explore import build_session
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--bronze", default=DEFAULT_BRONZE_URI)
-    parser.add_argument("--silver", default=DEFAULT_SILVER_URI)
+    parser.add_argument("--observations", default=DEFAULT_OBSERVATIONS_URI)
     parser.add_argument("--flights", default=DEFAULT_FLIGHTS_URI)
-    parser.add_argument("--gold", default=DEFAULT_GOLD_URI)
-    parser.add_argument("--flight-observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
-    parser.add_argument("--flights-model", default=DEFAULT_FLIGHTS_MODEL_URI)
+    parser.add_argument("--movements", default=DEFAULT_MOVEMENTS_URI)
     parser.add_argument("--phases", default=DEFAULT_PHASES_URI)
     parser.add_argument("--holds", default=DEFAULT_HOLDS_URI)
-    parser.add_argument("--gold-flights", default=DEFAULT_GOLD_FLIGHTS_URI)
+    parser.add_argument("--airport-operations", default=DEFAULT_AIRPORT_OPERATIONS_URI)
     args = parser.parse_args(argv)
 
     spark = build_session("adsb-quality")
     failures = 0
     try:
-        silver = read_silver(spark, args.silver)
-        segments = read_flight_segments(spark, args.flights)
-        gold_flights = read_gold_flights(spark, args.gold_flights)
+        observations = read_observations(spark, args.observations)
+        flights = read_flights(spark, args.flights)
+        movements = read_movements(spark, args.movements)
         phases = read_flight_phases(spark, args.phases)
         holds = read_flight_holds(spark, args.holds)
-        tracks = read_flight_observations(spark, args.flight_observations)
+        operations = read_airport_operations(spark, args.airport_operations)
 
         checks = [
-            ("bronze", validate_bronze(read_bronze(spark, args.bronze))),
-            ("silver", validate_silver(silver)),
+            ("observations", validate_observations(observations)),
             (
-                "flight_segments",
-                validate_flight_segments(segments)
-                + [check_observations_conserved(silver, segments)],
+                "flights",
+                validate_flights(flights)
+                + [check_observations_conserved(observations, flights)],
             ),
-            (
-                "flight_observations",
-                validate_flight_observations(
-                    read_flight_observations(spark, args.flight_observations)
-                ),
-            ),
-            ("flights", validate_flights(read_flights(spark, args.flights_model))),
+            ("movements", validate_movements(movements)),
             ("flight_phases", validate_flight_phases(phases)),
             ("flight_holds", validate_flight_holds(holds)),
-            ("gold_flights", validate_gold_flights(gold_flights)),
-            ("gold", validate_gold(read_airport_metrics(spark, args.gold))),
-            # the Gold layer is joined on flight_id alone, so every child table
-            # must resolve against the spine
+            ("airport_daily_operations", validate_airport_operations(operations)),
+            # everything is joined on flight_id alone, so every child table
+            # must resolve against the flight table
             (
-                "gold referential integrity",
+                "referential integrity",
                 [
-                    check_references(phases, gold_flights),
-                    check_references(holds, gold_flights),
-                    check_references(tracks, gold_flights),
+                    check_references(observations, flights),
+                    check_references(movements, flights),
+                    check_references(phases, flights),
+                    check_references(holds, flights),
                 ],
             ),
         ]

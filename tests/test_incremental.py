@@ -40,6 +40,7 @@ def table(spark, tmp_path):
             day(day_str, rows),
             path,
             release_date=day_str if incremental else None,
+            full_rebuild=not incremental,
         )
 
     def read():
@@ -175,35 +176,46 @@ def test_the_replace_where_predicate_rejects_anything_but_a_date():
             release_date_predicate(junk)
 
 
-# the layers carry the partition key through
+# the lifecycle rules: day-scoped by default, full rebuilds by name
 
 
-def test_silver_carries_the_partition_key_through(spark):
-    from adsb.silver import to_silver
+def test_a_write_without_a_day_is_refused(table):
+    """The destructive path has to be asked for, not fallen into.
 
-    bronze_schema = StructType([
-        StructField("icao", StringType()),
-        StructField("event_time", StructField("x", StringType()).dataType),
-        StructField("latitude", DoubleType()),
-        StructField("longitude", DoubleType()),
-        StructField("on_ground", StringType()),
-        StructField("altitude_ft", DoubleType()),
-        StructField("ground_speed_kt", DoubleType()),
-        StructField("track_deg", DoubleType()),
-        StructField("vertical_rate_fpm", DoubleType()),
-        StructField("callsign", StringType()),
-        StructField("registration", StringType()),
-        StructField("aircraft_type", StringType()),
-        StructField("operator", StringType()),
-        StructField("release_tag", StringType()),
-        StructField("release_date", DateType()),
-        StructField("ingested_at", StringType()),
-    ])
-    row = ("a1b2c3", "2025-12-30 10:00:00", 47.4, 8.5, "false", 1000.0, 250.0,
-           90.0, 0.0, "SWR1", "HB-ABC", "A320", "SWISS", "v2025.12.30",
-           date.fromisoformat(DAY1), "2026-01-01 00:00:00")
+    A bare overwrite tombstones the whole table. Ten exploratory runs doing
+    that is how the object store reached 29 GB for ~4 GB of live data.
+    """
+    with pytest.raises(ValueError, match="release_date"):
+        write_delta(table.day(DAY1, [("aaa", 1)]), table.path)
 
-    silver = to_silver(spark.createDataFrame([row], bronze_schema))
 
-    assert "release_date" in silver.columns
-    assert str(silver.first().release_date) == DAY1
+def test_a_full_rebuild_replaces_every_day(table):
+    table(DAY1, [("aaa", 1), ("bbb", 2)])
+    table(DAY2, [("ccc", 3)])
+
+    table(DAY2, [("zzz", 9)], incremental=False)
+
+    assert rows_by_day(table.read()) == {DAY2: 1}, "day 1 was meant to go"
+
+
+def test_a_full_rebuild_and_a_day_are_mutually_exclusive(table):
+    with pytest.raises(ValueError):
+        write_delta(
+            table.day(DAY1, [("aaa", 1)]),
+            table.path,
+            release_date=DAY1,
+            full_rebuild=True,
+        )
+
+
+# the pipeline carries the partition key through
+
+
+def test_observations_carry_the_partition_key_through(spark, raw_path):
+    from adsb.observations import to_observations
+    from adsb.spark_explore import read_aircraft
+
+    observations = to_observations(read_aircraft(spark, raw_path))
+
+    assert "release_date" in observations.columns
+    assert {str(r.release_date) for r in observations.collect()} == {"2025-12-30"}

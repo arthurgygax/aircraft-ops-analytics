@@ -1,6 +1,7 @@
 services:
   # This service runs your main Streamlit application
   app:
+    profiles: ["legacy"]   # superseded by the `explorer` service
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -14,6 +15,7 @@ services:
 
   # This service is for the one-time data conversion task
   converter:
+    profiles: ["legacy"]   # superseded by `python -m adsb.ingest`
     build:
       context: .
       dockerfile: docker/Dockerfile # It uses the exact same image as the app
@@ -53,32 +55,43 @@ services:
       minio:
         condition: service_healthy
     environment:
-      # Spark's default 1g driver heap OOMs on the Silver dedup (a window over
-      # every distinct icao+event_time) once the dataset is a few million rows.
-      # Raise it for bigger samples: SPARK_DRIVER_MEMORY=12g docker compose ...
+      # The dedup that needed a large driver heap -- a window over every
+      # distinct icao+event_time -- now happens inside each aircraft's trace
+      # array during decoding, so nothing shuffles for it. The segmentation
+      # window is what the heap is for now. Raise it for bigger samples:
+      # SPARK_DRIVER_MEMORY=12g docker compose ...
       PYSPARK_SUBMIT_ARGS: --driver-memory ${SPARK_DRIVER_MEMORY:-4g} pyspark-shell
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-adsb}
+      # one root for every table; point it at a scratch prefix for development
+      # runs so exploratory rebuilds never tombstone the real tables
+      ADSB_ROOT: ${ADSB_ROOT:-s3a://${S3_BUCKET:-adsb}}
       ADSB_RAW_URI: s3a://${S3_BUCKET:-adsb}/raw/adsb
-      ADSB_BRONZE_URI: s3a://${S3_BUCKET:-adsb}/bronze/observations
-      ADSB_SILVER_URI: s3a://${S3_BUCKET:-adsb}/silver/observations
-      ADSB_FLIGHTS_URI: s3a://${S3_BUCKET:-adsb}/silver/flight_segments
       ADSB_AIRPORTS_URI: s3a://${S3_BUCKET:-adsb}/reference/airports.csv
-      ADSB_GOLD_URI: s3a://${S3_BUCKET:-adsb}/gold/airport_daily_operations
-      ADSB_FLIGHT_OBSERVATIONS_URI: s3a://${S3_BUCKET:-adsb}/silver/flight_observations
-      ADSB_FLIGHTS_MODEL_URI: s3a://${S3_BUCKET:-adsb}/silver/flights
-      ADSB_PHASES_URI: s3a://${S3_BUCKET:-adsb}/gold/flight_phases
-      ADSB_HOLDS_URI: s3a://${S3_BUCKET:-adsb}/gold/flight_holds
-      ADSB_GOLD_FLIGHTS_URI: s3a://${S3_BUCKET:-adsb}/gold/flights
     volumes:
       - ./data:/app/data
       - ./src:/app/src
       - ./tests:/app/tests
       - ./pyproject.toml:/app/pyproject.toml
 
-  # Flight Explorer: reads the Gold tables, computes nothing.
+  # Spark vs pandas benchmark. Its own image: the pipeline image stays
+  # pandas-free, and both engines have to run on the same CPU and disk to be
+  # comparable. Not part of a default `docker compose up`.
+  bench:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bench
+    environment:
+      PYSPARK_SUBMIT_ARGS: --driver-memory ${SPARK_DRIVER_MEMORY:-4g} pyspark-shell
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./bench:/app/bench
+
+  # Flight Explorer: reads the published tables, computes nothing.
   explorer:
     build:
       context: .
@@ -91,6 +104,7 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET: ${S3_BUCKET:-adsb}
+      ADSB_ROOT: ${ADSB_ROOT:-s3a://${S3_BUCKET:-adsb}}
     ports:
       - "8502:8501"
     volumes:

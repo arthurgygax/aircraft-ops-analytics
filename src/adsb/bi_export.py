@@ -1,13 +1,13 @@
 """Export the Gold layer as Parquet files Power BI can open directly.
 
-    gold Delta tables (MinIO)  ->  data/powerbi/*.parquet
+    the pipeline's Delta tables (MinIO)  ->  data/powerbi/*.parquet
 
 WHY AN EXPORT EXISTS AT ALL
     Power BI Desktop has no connector for Delta on S3-compatible storage. It
     reads Parquet natively, so the shortest honest path from this project to a
     dashboard is a small set of single-file Parquet extracts. Nothing is
-    recomputed here: every table is a projection of Gold, and the one reshape
-    (movements) already exists inside the pipeline.
+    recomputed here: every table is a projection of one the pipeline already
+    published, movements included -- it is a table now, not a reshape.
 
 WHAT IS EXPORTED, AND WHY EACH ONE
     flights                   107,630  the flight grain: airline, aircraft
@@ -15,7 +15,7 @@ WHAT IS EXPORTED, AND WHY EACH ONE
                                        rollups. Drives airline and aircraft
                                        analysis.
     movements                  92,951  one row per inferred airport movement.
-                                       gold.flights carries departure and
+                                       flights carries departure and
                                        arrival as two columns, which forces
                                        either two relationships to an airport
                                        or awkward DAX. At movement grain,
@@ -75,7 +75,7 @@ DATA_SOURCE_LABEL = "ADS-B derived (adsb.lol) - not official airline or ATC data
 
 _MOVEMENTS_SQL = """
 SELECT
-    segment_id              AS flight_id,
+    flight_id,
     movement_type,
     event_time              AS movement_time,
     ident                   AS airport_ident,
@@ -157,19 +157,15 @@ def write_parquet(frame: DataFrame, directory: Path, name: str) -> tuple[str, in
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    from adsb.airports import DEFAULT_AIRPORTS_URI, airport_movements, read_airports
-    from adsb.flight_model import (
-        DEFAULT_FLIGHT_OBSERVATIONS_URI,
-        read_flight_observations,
+    from adsb.airports import (
+        DEFAULT_AIRPORT_OPERATIONS_URI,
+        DEFAULT_MOVEMENTS_URI,
+        read_airport_operations,
+        read_movements,
     )
-    from adsb.flights import DEFAULT_FLIGHTS_URI, read_flight_segments
-    from adsb.gold import (
-        DEFAULT_GOLD_FLIGHTS_URI,
-        DEFAULT_GOLD_URI,
-        read_airport_metrics,
-        read_gold_flights,
-    )
+    from adsb.flights import DEFAULT_FLIGHTS_URI, read_flights
     from adsb.holds import DEFAULT_HOLDS_URI, read_flight_holds
+    from adsb.observations import DEFAULT_OBSERVATIONS_URI, read_observations
     from adsb.phases import DEFAULT_PHASES_URI, read_flight_phases
     from adsb.spark_explore import build_session
 
@@ -187,21 +183,19 @@ def main(argv: list[str] | None = None) -> None:
 
     spark = build_session("adsb-bi-export")
     try:
-        flights = read_gold_flights(spark, DEFAULT_GOLD_FLIGHTS_URI).withColumn(
+        flights = read_flights(spark, DEFAULT_FLIGHTS_URI).withColumn(
             "data_source", F.lit(DATA_SOURCE_LABEL)
         )
         holds = read_flight_holds(spark, DEFAULT_HOLDS_URI)
-        movements = to_movements(
-            airport_movements(
-                read_flight_segments(spark, DEFAULT_FLIGHTS_URI),
-                read_airports(spark, DEFAULT_AIRPORTS_URI),
-            )
-        )
+        movements = to_movements(read_movements(spark, DEFAULT_MOVEMENTS_URI))
 
         exports = [
             ("flights", flights),
             ("movements", movements),
-            ("airport_daily_operations", read_airport_metrics(spark, DEFAULT_GOLD_URI)),
+            (
+                "airport_daily_operations",
+                read_airport_operations(spark, DEFAULT_AIRPORT_OPERATIONS_URI),
+            ),
             ("flight_holds", holds),
             ("flight_phases", read_flight_phases(spark, DEFAULT_PHASES_URI)),
         ]
@@ -209,7 +203,7 @@ def main(argv: list[str] | None = None) -> None:
             exports.append((
                 "flight_tracks_sample",
                 to_track_sample(
-                    read_flight_observations(spark, DEFAULT_FLIGHT_OBSERVATIONS_URI),
+                    read_observations(spark, DEFAULT_OBSERVATIONS_URI),
                     holds,
                     args.track_seconds,
                 ),

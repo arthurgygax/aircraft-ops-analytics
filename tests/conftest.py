@@ -62,3 +62,49 @@ def raw_path(tmp_path_factory):
         path.write_bytes(gzip.compress(json.dumps(aircraft).encode()))
 
     return root.parent
+
+
+# --- shared shapes for the one point-grain table -----------------------------
+
+
+@pytest.fixture(scope="session")
+def observation_schema():
+    """The columns ``adsb.observations.decode`` produces, before segmentation.
+
+    Explicit rather than inferred: a fixture where every callsign or altitude
+    is None defeats Spark's type inference.
+    """
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        DoubleType,
+        StringType,
+        StructField,
+        StructType,
+        TimestampType,
+    )
+
+    return StructType([
+        StructField("icao", StringType()),
+        StructField("is_icao_address", BooleanType()),
+        StructField("registration", StringType()),
+        StructField("aircraft_type", StringType()),
+        StructField("operator", StringType()),
+        StructField("event_time", TimestampType()),
+        StructField("latitude", DoubleType()),
+        StructField("longitude", DoubleType()),
+        StructField("on_ground", BooleanType()),
+        StructField("altitude_ft", DoubleType()),
+        StructField("ground_speed_kt", DoubleType()),
+        StructField("track_deg", DoubleType()),
+        StructField("vertical_rate_fpm", DoubleType()),
+        StructField("callsign", StringType()),
+        StructField("release_tag", StringType()),
+        StructField("release_date", DateType()),
+    ])
+
+
+@pytest.fixture
+def cleaned(spark, observation_schema):
+    """Build decoded-but-not-yet-segmented observations from tuples."""
+    return lambda rows: spark.createDataFrame(rows, observation_schema)

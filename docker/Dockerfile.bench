@@ -1,0 +1,34 @@
+# Image for the Spark-vs-pandas benchmark only.
+#
+# The pipeline image (docker/Dockerfile.spark) deliberately has no pandas: the
+# pipeline is Spark-native and nothing in it should be able to reach for a
+# DataFrame by accident. The benchmark needs both engines in one place so they
+# are measured on the same CPU, the same disk and the same input, so it gets
+# its own image rather than widening that one.
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps curl openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-adsb.txt requirements-bench.txt ./
+RUN pip install --no-cache-dir -r requirements-adsb.txt -r requirements-bench.txt
+
+ARG HADOOP_VERSION=3.3.4
+ARG AWS_SDK_VERSION=1.12.262
+ARG DELTA_VERSION=3.2.0
+RUN SPARK_JARS="$(python -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))')" \
+    && curl -fsSL -o "$SPARK_JARS/hadoop-aws-${HADOOP_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/delta-spark_2.12-${DELTA_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${DELTA_VERSION}/delta-spark_2.12-${DELTA_VERSION}.jar" \
+    && curl -fsSL -o "$SPARK_JARS/delta-storage-${DELTA_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
+
+ENV PYTHONPATH=/app/src:/app
+
+CMD ["python", "-m", "bench.run_benchmark", "--help"]

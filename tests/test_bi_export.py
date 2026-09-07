@@ -19,9 +19,9 @@ from adsb.bi_export import to_movements, to_track_sample, write_parquet  # noqa:
 T0 = datetime(2025, 12, 30, 8, 0, 0)
 RELEASE_DATE = date(2025, 12, 30)
 
-# the columns airport_movements() produces that the export reads
+# the columns the persisted movements table carries that the export reads
 MOVEMENT_SCHEMA = StructType([
-    StructField("segment_id", StringType()),
+    StructField("flight_id", StringType()),
     StructField("movement_type", StringType()),
     StructField("event_time", TimestampType()),
     StructField("ident", StringType()),

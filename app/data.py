@@ -1,4 +1,4 @@
-"""Reading and filtering the Gold tables.
+"""Reading and filtering the published tables.
 
 Deliberately free of Streamlit so it can be tested directly, and deliberately
 free of Spark: the app reads Delta with delta-rs, which needs no JVM and starts
@@ -16,14 +16,18 @@ from deltalake import DeltaTable
 
 BUCKET = os.environ.get("S3_BUCKET", "adsb")
 
+# The same root the pipeline writes to, so a development root is one variable
+# for both. delta-rs speaks s3://, the pipeline's S3A speaks s3a://.
+ROOT = os.environ.get("ADSB_ROOT", f"s3a://{BUCKET}").rstrip("/").replace("s3a://", "s3://", 1)
+
 TABLES = {
-    "flights": "gold/flights",
-    "phases": "gold/flight_phases",
-    "holds": "gold/flight_holds",
-    "airport_metrics": "gold/airport_daily_operations",
-    # trajectories stay in Silver: a Gold copy would duplicate 1.3 GB and
-    # exclude nothing (see the Gold model notes in the README)
-    "tracks": "silver/flight_observations",
+    "flights": "flights",
+    "phases": "flight_phases",
+    "holds": "flight_holds",
+    "airport_metrics": "airport_daily_operations",
+    # trajectories come from the canonical observation table; there is no
+    # second copy of the point grain anywhere in the pipeline
+    "tracks": "observations",
 }
 
 # Ordered the way a flight actually progresses, which is also the legend order.
@@ -55,7 +59,7 @@ def storage_options() -> dict[str, str]:
 
 
 def table_uri(name: str) -> str:
-    return f"s3://{BUCKET}/{TABLES[name]}"
+    return f"{ROOT}/{TABLES[name]}"
 
 
 def read_table(name: str, filters: list | None = None) -> pd.DataFrame:

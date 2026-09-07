@@ -1,3 +1,9 @@
+"""Every quality rule is deliberately made to fire.
+
+A check that never fires is worse than no check at all, so each case here
+corrupts exactly one field and names the rule that must catch it.
+"""
+
 from datetime import date, datetime
 
 import pytest
@@ -8,6 +14,7 @@ from pyspark.sql.types import (  # noqa: E402
     BooleanType,
     DateType,
     DoubleType,
+    IntegerType,
     LongType,
     StringType,
     StructField,
@@ -20,72 +27,97 @@ from adsb.quality import (  # noqa: E402
     assert_valid,
     check_not_empty,
     check_observations_conserved,
+    check_references,
     check_rows,
     check_unique,
-    validate_bronze,
-    validate_flight_segments,
-    validate_gold,
-    validate_silver,
+    collisions_resolved,
+    validate_airport_operations,
+    validate_flights,
+    validate_movements,
+    validate_observations,
 )
 
 T0 = datetime(2025, 12, 30, 8, 0, 0)
 T1 = datetime(2025, 12, 30, 9, 0, 0)
+DAY = date(2025, 12, 30)
 
-# One valid row per layer; tests corrupt a single field to prove each rule bites.
-LAYERS = {
-    "bronze": (
-        validate_bronze,
+# One valid row per table; tests corrupt a single field to prove each rule bites.
+TABLES = {
+    "observations": (
+        validate_observations,
         StructType([
+            StructField("flight_id", StringType()),
             StructField("icao", StringType()),
-            StructField("event_time", TimestampType()),
-            StructField("latitude", DoubleType()),
-            StructField("longitude", DoubleType()),
-            StructField("source_file", StringType()),
-            StructField("release_tag", StringType()),
-            StructField("ingested_at", TimestampType()),
-        ]),
-        {"icao": "a1b2c3", "event_time": T0, "latitude": 47.4, "longitude": 8.5,
-         "source_file": "s3a://adsb/raw/x.json.gz", "release_tag": "v2025.12.30",
-         "ingested_at": T0},
-    ),
-    "silver": (
-        validate_silver,
-        StructType([
-            StructField("icao", StringType()),
-            StructField("event_time", TimestampType()),
-            StructField("latitude", DoubleType()),
-            StructField("longitude", DoubleType()),
             StructField("is_icao_address", BooleanType()),
+            StructField("event_time", TimestampType()),
+            StructField("observation_seq", IntegerType()),
+            StructField("latitude", DoubleType()),
+            StructField("longitude", DoubleType()),
             StructField("ground_speed_kt", DoubleType()),
             StructField("vertical_rate_fpm", DoubleType()),
             StructField("callsign", StringType()),
             StructField("release_tag", StringType()),
+            StructField("release_date", DateType()),
         ]),
-        {"icao": "a1b2c3", "event_time": T0, "latitude": 47.4, "longitude": 8.5,
-         "is_icao_address": True, "ground_speed_kt": 300.0,
+        {"flight_id": "a1b2c3_20251230080000", "icao": "a1b2c3",
+         "is_icao_address": True, "event_time": T0, "observation_seq": 1,
+         "latitude": 47.4, "longitude": 8.5, "ground_speed_kt": 300.0,
          "vertical_rate_fpm": 500.0, "callsign": "SWR1",
-         "release_tag": "v2025.12.30"},
+         "release_tag": "v2025.12.30", "release_date": DAY},
     ),
-    "flight_segments": (
-        validate_flight_segments,
+    "movements": (
+        validate_movements,
         StructType([
-            StructField("segment_id", StringType()),
+            StructField("flight_id", StringType()),
+            StructField("movement_type", StringType()),
+            StructField("event_time", TimestampType()),
+            StructField("ident", StringType()),
+            StructField("latitude", DoubleType()),
+            StructField("longitude", DoubleType()),
+            StructField("distance_km", DoubleType()),
+        ]),
+        {"flight_id": "a1b2c3_20251230080000", "movement_type": "departure",
+         "event_time": T0, "ident": "LSZH", "latitude": 47.4, "longitude": 8.5,
+         "distance_km": 1.2},
+    ),
+    "flights": (
+        validate_flights,
+        StructType([
+            StructField("flight_id", StringType()),
+            StructField("flight_date", DateType()),
             StructField("icao", StringType()),
-            StructField("start_time", TimestampType()),
-            StructField("end_time", TimestampType()),
+            StructField("first_seen_time", TimestampType()),
+            StructField("last_seen_time", TimestampType()),
             StructField("duration_seconds", LongType()),
             StructField("n_observations", LongType()),
-            StructField("start_latitude", DoubleType()),
-            StructField("start_longitude", DoubleType()),
-            StructField("end_latitude", DoubleType()),
-            StructField("end_longitude", DoubleType()),
+            StructField("first_latitude", DoubleType()),
+            StructField("first_longitude", DoubleType()),
+            StructField("last_latitude", DoubleType()),
+            StructField("last_longitude", DoubleType()),
+            StructField("airline_icao", StringType()),
+            StructField("departure_airport_ident", StringType()),
+            StructField("departure_time", TimestampType()),
+            StructField("departure_distance_km", DoubleType()),
+            StructField("arrival_airport_ident", StringType()),
+            StructField("arrival_time", TimestampType()),
+            StructField("arrival_distance_km", DoubleType()),
+            StructField("n_detected_holds", LongType()),
+            StructField("has_detected_hold", BooleanType()),
+            StructField("total_hold_seconds", LongType()),
         ]),
-        {"segment_id": "s1", "icao": "a1b2c3", "start_time": T0, "end_time": T1,
-         "duration_seconds": 3600, "n_observations": 10, "start_latitude": 47.4,
-         "start_longitude": 8.5, "end_latitude": 46.0, "end_longitude": 7.0},
+        {"flight_id": "a1b2c3_20251230080000", "flight_date": DAY,
+         "icao": "a1b2c3", "first_seen_time": T0, "last_seen_time": T1,
+         "duration_seconds": 3600, "n_observations": 10,
+         "first_latitude": 47.4, "first_longitude": 8.5,
+         "last_latitude": 46.0, "last_longitude": 7.0, "airline_icao": "SWR",
+         "departure_airport_ident": "LSZH", "departure_time": T0,
+         "departure_distance_km": 1.2, "arrival_airport_ident": "EGLL",
+         "arrival_time": T1, "arrival_distance_km": 2.5,
+         "n_detected_holds": 0, "has_detected_hold": False,
+         "total_hold_seconds": 0},
     ),
-    "gold": (
-        validate_gold,
+    "airport_daily_operations": (
+        validate_airport_operations,
         StructType([
             StructField("operations_date", DateType()),
             StructField("airport_ident", StringType()),
@@ -101,11 +133,11 @@ LAYERS = {
             StructField("flights_with_detected_holds", LongType()),
             StructField("hold_rate", DoubleType()),
         ]),
-        {"operations_date": date(2025, 12, 30), "airport_ident": "LSZH",
+        {"operations_date": DAY, "airport_ident": "LSZH",
          "arrivals": 3, "departures": 2, "total_operations": 5,
-         "unique_aircraft": 4, "airport_latitude": 47.458, "airport_longitude": 8.548,
-         "first_operation_time": T0, "last_operation_time": T1,
-         "metric_source": "adsb_inferred",
+         "unique_aircraft": 4, "airport_latitude": 47.458,
+         "airport_longitude": 8.548, "first_operation_time": T0,
+         "last_operation_time": T1, "metric_source": "adsb_inferred",
          "flights_with_detected_holds": 1, "hold_rate": 0.3333},
     ),
 }
@@ -113,123 +145,173 @@ LAYERS = {
 
 @pytest.fixture
 def table(spark):
-    def _make(layer, **overrides):
-        _, schema, valid = LAYERS[layer]
+    def _make(name, **overrides):
+        _, schema, valid = TABLES[name]
         row = {**valid, **overrides}
         return spark.createDataFrame([tuple(row[f.name] for f in schema)], schema)
 
     return _make
 
 
-@pytest.mark.parametrize("layer", list(LAYERS))
-def test_a_valid_row_passes_every_check(table, layer):
-    validator = LAYERS[layer][0]
+@pytest.mark.parametrize("name", list(TABLES))
+def test_a_valid_row_passes_every_check(table, name):
+    validator = TABLES[name][0]
 
-    failures = [r for r in validator(table(layer)) if not r.passed]
+    failures = [r for r in validator(table(name)) if not r.passed]
 
     assert failures == []
 
 
 # Each case corrupts one field and names the check that must catch it.
 CORRUPTIONS = [
-    ("bronze", {"icao": None}, "icao is present"),
-    ("bronze", {"latitude": 91.0}, "latitude within [-90, 90]"),
-    ("bronze", {"longitude": -181.0}, "longitude within [-180, 180]"),
-    ("bronze", {"event_time": None}, "event_time is present"),
+    ("observations", {"icao": None}, "icao is present"),
+    ("observations", {"latitude": 91.0}, "latitude within [-90, 90]"),
+    ("observations", {"longitude": -181.0}, "longitude within [-180, 180]"),
+    ("observations", {"event_time": None}, "event_time is present"),
+    ("observations", {"latitude": 0.0, "longitude": 0.0},
+     "position is not null island"),
+    ("observations", {"latitude": None}, "position is present"),
+    ("observations", {"observation_seq": 0}, "observation_seq starts at one"),
+    ("observations", {"flight_id": "zzz_1"},
+     "flight_id starts with the aircraft address"),
+    ("observations", {"ground_speed_kt": 1800.0},
+     "implausible ground speed removed"),
+    ("observations", {"vertical_rate_fpm": -64000.0},
+     "implausible vertical rate removed"),
+    ("observations", {"callsign": ""}, "blank callsign normalized to NULL"),
+    ("observations", {"is_icao_address": None}, "is_icao_address is set"),
     # the regex regression that actually happened
-    ("bronze", {"release_tag": ""}, "release_tag is recorded"),
-    ("silver", {"ground_speed_kt": 1800.0}, "implausible ground speed removed"),
-    ("silver", {"vertical_rate_fpm": -64000.0}, "implausible vertical rate removed"),
-    ("silver", {"callsign": ""}, "blank callsign normalized to NULL"),
-    ("silver", {"is_icao_address": None}, "is_icao_address is set"),
-    ("flight_segments", {"end_time": datetime(2025, 12, 30, 7, 0, 0)},
-     "segment does not end before it starts"),
-    ("flight_segments", {"duration_seconds": -1}, "duration is not negative"),
-    ("flight_segments", {"n_observations": 0},
-     "segment has at least one observation"),
-    ("flight_segments", {"duration_seconds": 12345},
-     "duration agrees with the timestamps"),
-    ("gold", {"total_operations": 99},
+    ("observations", {"release_tag": ""}, "release_tag is recorded"),
+    ("movements", {"movement_type": "diversion"},
+     "movement_type is arrival or departure"),
+    ("movements", {"ident": None}, "an airport is matched"),
+    ("movements", {"distance_km": 120.0}, "the match is within the search radius"),
+    ("flights", {"last_seen_time": datetime(2025, 12, 30, 7, 0, 0)},
+     "flight does not end before it starts"),
+    ("flights", {"duration_seconds": -1}, "duration is not negative"),
+    ("flights", {"n_observations": 0}, "flight has at least one observation"),
+    ("flights", {"duration_seconds": 12345}, "duration agrees with the timestamps"),
+    ("flights", {"flight_date": date(2025, 12, 31)},
+     "flight_date matches the first observation"),
+    ("flights", {"airline_icao": "N884GA"}, "airline_icao is a three letter code"),
+    ("flights", {"arrival_distance_km": 120.0},
+     "matched airports are within the search radius"),
+    ("flights", {"departure_time": None}, "an airport match carries a time"),
+    ("flights", {"has_detected_hold": True}, "hold rollups agree with each other"),
+    ("flights", {"total_hold_seconds": 300},
+     "a flight with no holds has no hold time"),
+    ("airport_daily_operations", {"total_operations": 99},
      "arrivals and departures sum to total_operations"),
-    ("gold", {"unique_aircraft": 99}, "unique_aircraft does not exceed operations"),
-    ("gold", {"operations_date": None}, "operations_date is present"),
-    ("gold", {"airport_ident": None}, "airport_ident is present"),
-    ("gold", {"metric_source": "official"}, "every row is labelled as inferred"),
-    ("gold", {"flights_with_detected_holds": 99},
+    ("airport_daily_operations", {"unique_aircraft": 99},
+     "unique_aircraft does not exceed operations"),
+    ("airport_daily_operations", {"operations_date": None},
+     "operations_date is present"),
+    ("airport_daily_operations", {"airport_ident": None}, "airport_ident is present"),
+    ("airport_daily_operations", {"metric_source": "official"},
+     "every row is labelled as inferred"),
+    ("airport_daily_operations", {"flights_with_detected_holds": 99},
      "flights with holds do not exceed arrivals"),
-    ("gold", {"hold_rate": 1.5}, "hold_rate is a proportion"),
-    ("gold", {"last_operation_time": datetime(2025, 12, 30, 7, 0, 0)},
+    ("airport_daily_operations", {"hold_rate": 1.5}, "hold_rate is a proportion"),
+    ("airport_daily_operations", {"last_operation_time": datetime(2025, 12, 30, 7, 0)},
      "last operation is not before the first"),
-    ("gold", {"first_operation_time": datetime(2025, 12, 31, 8, 0, 0)},
+    ("airport_daily_operations", {"first_operation_time": datetime(2025, 12, 31, 8, 0)},
      "operations fall on the reported date"),
 ]
 
 
-@pytest.mark.parametrize("layer,corruption,expected_check", CORRUPTIONS)
+@pytest.mark.parametrize("name,corruption,expected_check", CORRUPTIONS)
 def test_a_corrupt_row_is_caught_by_the_right_check(
-    table, layer, corruption, expected_check
+    table, name, corruption, expected_check
 ):
-    """A check that never fires is worse than no check at all."""
-    validator = LAYERS[layer][0]
+    validator = TABLES[name][0]
 
-    failed = [r.check for r in validator(table(layer, **corruption)) if not r.passed]
+    failed = [r.check for r in validator(table(name, **corruption)) if not r.passed]
 
     assert expected_check in failed
 
 
 def test_range_checks_ignore_missing_values(table):
-    """A NULL coordinate is missing, not out of range; only IS NULL rules police it."""
-    failed = [r.check for r in validate_bronze(table("bronze", latitude=None))
-              if not r.passed]
+    """A NULL coordinate is missing, not out of range."""
+    failed = [
+        r.check for r in validate_observations(table("observations", latitude=None))
+        if not r.passed
+    ]
 
     assert "latitude within [-90, 90]" not in failed
+    assert "position is present" in failed, "the IS NULL rule is what polices it"
 
 
-def test_an_empty_table_is_a_failure(spark, table):
+def test_an_empty_table_is_a_failure(table):
     """The silent-empty failure mode: everything downstream builds, emptily."""
-    empty = table("bronze").limit(0)
-
-    assert check_not_empty(empty).failures == 1
-    assert check_not_empty(table("bronze")).passed
+    assert check_not_empty(table("flights").limit(0)).failures == 1
+    assert check_not_empty(table("flights")).passed
 
 
-def test_duplicate_keys_are_counted(spark, table):
-    doubled = table("silver").union(table("silver"))
+def test_duplicate_keys_are_counted(table):
+    doubled = table("observations").union(table("observations"))
 
     assert check_unique(doubled, ("icao", "event_time")).failures == 1
-    assert check_unique(table("silver"), ("icao", "event_time")).passed
+    assert check_unique(table("observations"), ("icao", "event_time")).passed
 
 
-def test_lost_observations_are_detected(spark, table):
-    """Segments must account for every observation, exactly once."""
-    observations = table("silver").union(table("silver").limit(1))  # 2 rows
+def test_lost_observations_are_detected(table):
+    """Flights must account for every observation, exactly once."""
+    observations = table("observations").union(table("observations").limit(1))
 
-    matching = table("flight_segments", n_observations=2)
+    matching = table("flights", n_observations=2)
     assert check_observations_conserved(observations, matching).passed
 
-    dropping = table("flight_segments", n_observations=1)
+    dropping = table("flights", n_observations=1)
     assert check_observations_conserved(observations, dropping).failures == 1
 
 
-def test_check_rows_reports_the_number_of_offending_rows(spark, table):
-    three_bad = table("bronze", latitude=91.0).union(table("bronze", latitude=91.0))
+def test_orphan_children_are_detected(table):
+    flights = table("flights")
 
-    results = check_rows(three_bad, {"latitude in range": "latitude > 90"})
+    assert check_references(table("observations"), flights).passed
+    orphan = table("observations", flight_id="zzz999_20251230080000")
+    assert check_references(orphan, flights).failures == 1
+
+
+def test_collisions_resolved_reports_what_the_decoder_collapsed(spark):
+    """The number used to be visible only as a difference between row counts."""
+    aircraft = spark.createDataFrame(
+        [("a1b2c3", [["1"], ["2"], ["3"]]), ("d4e5f6", [["1"], ["2"]])],
+        "icao string, trace array<array<string>>",
+    )
+    kept = spark.createDataFrame([(i,) for i in range(4)], "n int")
+
+    points, observations = collisions_resolved(aircraft, kept)
+
+    assert (points, observations) == (5, 4)
+
+
+def test_check_rows_reports_the_number_of_offending_rows(table):
+    two_bad = table("observations", latitude=91.0).union(
+        table("observations", latitude=91.0)
+    )
+
+    results = check_rows(two_bad, {"latitude in range": "latitude > 90"})
 
     assert results[0].failures == 2
 
 
 def test_assert_valid_names_every_failing_check(table):
-    results = validate_gold(table("gold", total_operations=99, unique_aircraft=100))
+    results = validate_airport_operations(
+        table("airport_daily_operations", total_operations=99, unique_aircraft=100)
+    )
 
     with pytest.raises(DataQualityError) as raised:
-        assert_valid("gold", results)
+        assert_valid("airport_daily_operations", results)
 
     message = str(raised.value)
     assert "arrivals and departures sum to total_operations" in message
     assert "unique_aircraft does not exceed operations" in message
-    assert "gold failed 2 of" in message
+    assert "airport_daily_operations failed 2 of" in message
 
 
 def test_assert_valid_is_silent_when_everything_passes(table):
-    assert_valid("gold", validate_gold(table("gold"))) is None
+    assert assert_valid(
+        "airport_daily_operations",
+        validate_airport_operations(table("airport_daily_operations")),
+    ) is None

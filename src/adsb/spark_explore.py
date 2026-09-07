@@ -1,9 +1,9 @@
 """Read the raw adsb.lol traces with PySpark and derive position reports.
 
 Raw ingestion gives one gzipped JSON file per aircraft, each holding a whole
-day's ``trace`` for that aircraft. This turns that into the shape ADS-B data is
-actually analysed in -- one row per position report -- and runs a few
-aggregations over it.
+day's ``trace`` for that aircraft. This module owns the Spark session and the
+reader for those files; ``adsb.observations`` owns the decoding. ``main`` here
+is an exploration job that profiles a raw sample without writing anything.
 
 Two things about the source dictate the approach:
 
@@ -82,6 +82,10 @@ def build_session(app_name: str = "adsb-spark-explore") -> SparkSession:
         SparkSession.builder.appName(app_name)
         .master("local[*]")
         .config("spark.sql.session.timeZone", "UTC")
+        # Spark caches uncompressed by default. Persisting 44.6M rows that way
+        # wrote ~21 GB to local disk and cost more than recomputing the window
+        # it was meant to save; compressed, the cache is worth having.
+        .config("spark.rdd.compress", "true")
         # Delta: the jars are baked into the image, so only the hooks are set
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
@@ -117,63 +121,9 @@ def read_aircraft(spark: SparkSession, path: Path | str) -> DataFrame:
     )
 
 
-def typed_points(aircraft: DataFrame, keep: list[str] | None = None) -> DataFrame:
-    """Explode each aircraft's trace into one typed row per position report.
-
-    Decoding only: every source observation survives, including ones with no
-    position fix. Bronze needs that fidelity, so the filtering lives in
-    ``position_reports`` below rather than here.
-
-    ``keep`` names aircraft-level columns to carry through the explode, which
-    is how Bronze attaches its lineage columns.
-    """
-    keep = keep or []
-    point = F.col("point")
-    return (
-        aircraft.select(
-            *keep,
-            "icao",
-            F.col("r").alias("registration"),
-            F.col("t").alias("aircraft_type"),
-            F.col("ownOp").alias("operator"),
-            "timestamp",
-            F.explode("trace").alias("point"),
-        )
-        .select(
-            *keep,
-            "icao",
-            "registration",
-            "aircraft_type",
-            "operator",
-            F.to_timestamp(F.col("timestamp") + point[0].cast(DoubleType())).alias(
-                "event_time"
-            ),
-            point[1].cast(DoubleType()).alias("latitude"),
-            point[2].cast(DoubleType()).alias("longitude"),
-            # position 3 is feet, or the string "ground"
-            (point[3] == F.lit("ground")).alias("on_ground"),
-            F.when(point[3] != F.lit("ground"), point[3].cast(DoubleType())).alias(
-                "altitude_ft"
-            ),
-            point[4].cast(DoubleType()).alias("ground_speed_kt"),
-            point[5].cast(DoubleType()).alias("track_deg"),
-            point[7].cast(DoubleType()).alias("vertical_rate_fpm"),
-            # position 8 is a nested object on some points only
-            F.trim(F.get_json_object(point[8], "$.flight")).alias("callsign"),
-        )
-    )
-
-
-def position_reports(aircraft: DataFrame) -> DataFrame:
-    """Typed points that actually carry a position."""
-    return typed_points(aircraft).where(
-        F.col("latitude").isNotNull() & F.col("longitude").isNotNull()
-    )
-
-
 def summarize(positions: DataFrame) -> None:
     """Aggregate in Spark; only the small result sets come back to Python."""
-    print("\n--- position reports ---")
+    print("\n--- observations ---")
     print(f"rows: {positions.count():,}")
     positions.select(
         F.countDistinct("icao").alias("aircraft"),
@@ -212,6 +162,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--path", default=DEFAULT_RAW_URI)
     args = parser.parse_args(argv)
 
+    from adsb.observations import decode
+
     spark = build_session()
     try:
         aircraft = read_aircraft(spark, args.path)
@@ -220,8 +172,8 @@ def main(argv: list[str] | None = None) -> None:
         print("\n--- source schema ---")
         aircraft.printSchema()
 
-        positions = position_reports(aircraft)
-        print("--- position report schema ---")
+        positions = decode(aircraft)
+        print("--- observation schema ---")
         positions.printSchema()
 
         summarize(positions)

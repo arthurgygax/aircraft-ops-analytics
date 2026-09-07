@@ -1,9 +1,9 @@
 """Operational phases inferred from ADS-B trajectories.
 
-    silver/flight_observations  ->  gold/flight_phases
+    <root>/observations  ->  <root>/flight_phases
 
 One row per contiguous phase of a flight, so a flight has several rows. Phases
-are never folded into ``silver.flights``: a flight has many, and flattening
+are never folded into ``flights``: a flight has many, and flattening
 them would force an arbitrary choice of which one.
 
 THESE ARE INFERRED, NOT OPERATIONAL RECORDS
@@ -75,11 +75,9 @@ import os
 
 from pyspark.sql import DataFrame, SparkSession
 
-from adsb.delta_io import write_delta
+from adsb.delta_io import table_uri, write_delta
 
-DEFAULT_PHASES_URI = os.environ.get(
-    "ADSB_PHASES_URI", "s3a://adsb/gold/flight_phases"
-)
+DEFAULT_PHASES_URI = os.environ.get("ADSB_PHASES_URI", table_uri("flight_phases"))
 
 # Vertical rate within +/- this is treated as level flight. See THRESHOLDS.
 LEVEL_BAND_FPM = 300.0
@@ -214,9 +212,12 @@ def to_flight_phases(
 
 
 def write_flight_phases(
-    df: DataFrame, path: str, mode: str = "overwrite", release_date: str | None = None
+    df: DataFrame,
+    path: str,
+    release_date: str | None = None,
+    full_rebuild: bool = False,
 ) -> None:
-    write_delta(df, path, mode=mode, release_date=release_date)
+    write_delta(df, path, release_date=release_date, full_rebuild=full_rebuild)
 
 
 def read_flight_phases(spark: SparkSession, path: str) -> DataFrame:
@@ -228,31 +229,26 @@ def main(argv: list[str] | None = None) -> None:
 
     from pyspark.sql import functions as F
 
-    from adsb.flight_model import (
-        DEFAULT_FLIGHT_OBSERVATIONS_URI,
-        read_flight_observations,
-    )
+    from adsb.observations import DEFAULT_OBSERVATIONS_URI, read_observations
     from adsb.quality import assert_valid, report, validate_flight_phases
     from adsb.spark_explore import build_session
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
+    parser.add_argument("--observations", default=DEFAULT_OBSERVATIONS_URI)
     parser.add_argument("--phases", default=DEFAULT_PHASES_URI)
     parser.add_argument("--level-band-fpm", type=float, default=LEVEL_BAND_FPM)
     parser.add_argument(
         "--smoothing-seconds", type=int, default=SMOOTHING_WINDOW_SECONDS
     )
-    parser.add_argument("--mode", default="overwrite", choices=["overwrite", "append"])
-    parser.add_argument(
-        "--release-date",
-        default=None,
-        help="process one day only, replacing just that partition",
-    )
+    parser.add_argument("--release-date", default=None, help="process one day only")
+    parser.add_argument("--full-rebuild", action="store_true")
     args = parser.parse_args(argv)
+    if args.release_date is None and not args.full_rebuild:
+        parser.error("pass --release-date, or --full-rebuild")
 
     spark = build_session("adsb-phases")
     try:
-        points = read_flight_observations(spark, args.observations)
+        points = read_observations(spark, args.observations)
         if args.release_date:
             points = points.where(F.col("release_date") == F.lit(args.release_date))
 
@@ -262,7 +258,9 @@ def main(argv: list[str] | None = None) -> None:
 
         print(f"Writing {args.phases} (band={args.level_band_fpm} fpm, "
               f"smoothing={args.smoothing_seconds}s)")
-        write_flight_phases(phases, args.phases, args.mode, args.release_date)
+        write_flight_phases(
+            phases, args.phases, args.release_date, args.full_rebuild
+        )
 
         table = read_flight_phases(spark, args.phases)
         table.createOrReplaceTempView("phases")

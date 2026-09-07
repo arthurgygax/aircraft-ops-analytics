@@ -1,6 +1,6 @@
 """Holding patterns detected in ADS-B trajectories.
 
-    silver/flight_observations + silver/flights  ->  gold/flight_holds
+    <root>/observations + <root>/flights  ->  <root>/flight_holds
 
 WHAT THIS DETECTS, AND WHAT IT DOES NOT
     This finds *observed* circling: stretches where an aircraft turned through
@@ -71,7 +71,8 @@ KNOWN LIMITATIONS -- read before trusting a row
       police or medical orbits all produce the same geometry and will appear
       here. Nothing in ADS-B distinguishes their intent from a hold's.
     * Association with an airport is the *flight's own inferred arrival
-      airport*, not a geometric search for the nearest airfield. It is null
+      airport* -- taken from the movement pivot, or equivalently from the
+      flight table -- not a geometric search for the nearest airfield. It is null
       whenever that inference failed, which is often (arrival airports resolve
       for about 42% of flights). ``distance_to_arrival_airport_km`` says how
       far the circling was from it, so an en-route hold can be told from a
@@ -88,9 +89,9 @@ import os
 
 from pyspark.sql import DataFrame, SparkSession
 
-from adsb.delta_io import write_delta
+from adsb.delta_io import table_uri, write_delta
 
-DEFAULT_HOLDS_URI = os.environ.get("ADSB_HOLDS_URI", "s3a://adsb/gold/flight_holds")
+DEFAULT_HOLDS_URI = os.environ.get("ADSB_HOLDS_URI", table_uri("flight_holds"))
 
 TURN_WINDOW_SECONDS = 360
 MIN_TURN_DEGREES = 360.0
@@ -265,9 +266,12 @@ def to_flight_holds(
 
 
 def write_flight_holds(
-    df: DataFrame, path: str, mode: str = "overwrite", release_date: str | None = None
+    df: DataFrame,
+    path: str,
+    release_date: str | None = None,
+    full_rebuild: bool = False,
 ) -> None:
-    write_delta(df, path, mode=mode, release_date=release_date)
+    write_delta(df, path, release_date=release_date, full_rebuild=full_rebuild)
 
 
 def read_flight_holds(spark: SparkSession, path: str) -> DataFrame:
@@ -280,33 +284,27 @@ def main(argv: list[str] | None = None) -> None:
     from pyspark.sql import functions as F
 
     from adsb.airports import DEFAULT_AIRPORTS_URI, read_airports
-    from adsb.flight_model import (
-        DEFAULT_FLIGHT_OBSERVATIONS_URI,
-        DEFAULT_FLIGHTS_MODEL_URI,
-        read_flight_observations,
-        read_flights,
-    )
+    from adsb.flights import DEFAULT_FLIGHTS_URI, read_flights
+    from adsb.observations import DEFAULT_OBSERVATIONS_URI, read_observations
     from adsb.quality import assert_valid, report, validate_flight_holds
     from adsb.spark_explore import build_session
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--observations", default=DEFAULT_FLIGHT_OBSERVATIONS_URI)
-    parser.add_argument("--flights", default=DEFAULT_FLIGHTS_MODEL_URI)
+    parser.add_argument("--observations", default=DEFAULT_OBSERVATIONS_URI)
+    parser.add_argument("--flights", default=DEFAULT_FLIGHTS_URI)
     parser.add_argument("--airports", default=DEFAULT_AIRPORTS_URI)
     parser.add_argument("--holds", default=DEFAULT_HOLDS_URI)
     parser.add_argument("--min-turn-degrees", type=float, default=MIN_TURN_DEGREES)
     parser.add_argument("--max-span-km", type=float, default=MAX_SPAN_KM)
-    parser.add_argument("--mode", default="overwrite", choices=["overwrite", "append"])
-    parser.add_argument(
-        "--release-date",
-        default=None,
-        help="process one day only, replacing just that partition",
-    )
+    parser.add_argument("--release-date", default=None, help="process one day only")
+    parser.add_argument("--full-rebuild", action="store_true")
     args = parser.parse_args(argv)
+    if args.release_date is None and not args.full_rebuild:
+        parser.error("pass --release-date, or --full-rebuild")
 
     spark = build_session("adsb-holds")
     try:
-        points = read_flight_observations(spark, args.observations)
+        points = read_observations(spark, args.observations)
         flights = read_flights(spark, args.flights)
         if args.release_date:
             day = F.lit(args.release_date)
@@ -323,7 +321,9 @@ def main(argv: list[str] | None = None) -> None:
 
         print(f"Writing {args.holds} (min_turn={args.min_turn_degrees} deg, "
               f"max_span={args.max_span_km} km)")
-        write_flight_holds(holds, args.holds, args.mode, args.release_date)
+        write_flight_holds(
+            holds, args.holds, args.release_date, args.full_rebuild
+        )
 
         table = read_flight_holds(spark, args.holds)
         table.createOrReplaceTempView("holds")
