@@ -10,7 +10,7 @@ Power BI.**
 ![Storage](https://img.shields.io/badge/Storage-S3%20%2F%20MinIO-C72E49?style=flat&logo=minio&logoColor=white)
 ![Docker](https://img.shields.io/badge/Runtime-Docker%20Compose-2496ED?style=flat&logo=docker&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/App-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-219%20passing-3fb950?style=flat)
+![Tests](https://img.shields.io/badge/tests-249%20passing-3fb950?style=flat)
 
 Nobody publishes an open dataset of "flights that departed airport X today".
 What *is* public is the raw radio: hundreds of millions of position reports a
@@ -162,6 +162,14 @@ recompute even in principle — it reads what the pipeline published. Layout,
 persistence proof and measured query latencies are in
 [docs/gold-model.md](docs/gold-model.md#the-trajectory-store).
 
+**The explorer colours three trajectories, not eight.** Any two tracks on a
+map can end up adjacent, so the palette has to clear the colour-vision floors
+on *every* pair, not just neighbouring ones. Run against that test, only three
+hues survive in both light and dark — a fourth measured ΔE 1.9 against blue for
+protanopes on the dark surface, which is no separation at all. So identity
+never rests on colour: every track is labelled with its callsign, and further
+selections take neutral ink rather than an invented hue.
+
 **Thresholds are measured, never assumed.** Flights split on a 15-minute
 tracking gap because segments containing more than one callsign — the signature
 of two flights merged into one — stay flat at 14–19 for thresholds from 5 to 30
@@ -239,21 +247,35 @@ tables, are in [docs/scope.md](docs/scope.md).
 
 ## The applications
 
-**Flight Explorer** (`docker compose up -d explorer`, port 8502) — filter by
-date, airport, airline, aircraft type or callsign; select a flight to see its
-trajectory coloured by detected phase, a phase timeline, an altitude/speed
-profile and any detected holds; plus an airport view with hourly traffic. It
-reads Gold and computes nothing: no Spark, no JVM, starting in seconds via
-[delta-rs](https://delta-io.github.io/delta-rs/).
+**Flight Explorer** (`docker compose up -d explorer`, port 8502) — two tabs
+over the seven-day study period.
+
+*Flights*: filter by date, **departure** airport, **arrival** airport, airline,
+aircraft type and callsign — departure and arrival are separate boxes, because
+"departing ZRH" and "arriving at ZRH" are different questions about the same
+airport. Pick flights from the list to draw their trajectories. One flight
+shows its track coloured by detected phase, a phase timeline, altitude and
+speed profiles, and any detected holding pattern drawn as the circling itself;
+several show one colour each for comparison.
+
+*Airports*: ZRH or DUS, with movements by day and by hour, arrivals against
+departures, airline and aircraft-type distributions, and detected-hold
+statistics.
+
+It reads the published tables and computes nothing: no Spark, no JVM, starting
+in seconds via [delta-rs](https://delta-io.github.io/delta-rs/). The 3.3M-point
+trajectory table is never loaded whole — points are fetched per selected
+flight, with the date, so six of the seven day-partitions are pruned.
 
 **Power BI** — `docker compose run --rm spark python -m adsb.bi_export` writes
 six Parquet extracts (45 MB) that Power BI opens natively.
 [docs/powerbi.md](docs/powerbi.md) documents the model, relationships, DAX
 measures and dashboard pages.
 
-> **Screenshots:** run the explorer and capture the two tabs into `docs/`. The
-> existing `docs/*.png` are from the superseded legacy application and are
-> **not** pictures of this app.
+> **Screenshots:** `docs/dashboard_preview.png`, `docs/feature_inspector.png`
+> and `docs/feature_radar.png` are pictures of the **superseded legacy
+> application**, not of the Flight Explorer. Capture the two current tabs into
+> `docs/` and delete those three when you do.
 
 ## Testing and data quality
 
@@ -262,7 +284,7 @@ docker compose run --rm spark pytest -q                             # pipeline
 docker compose run --rm explorer pytest tests/test_app_data.py -q   # app
 ```
 
-200 pipeline tests and 19 app tests, covering the places where being wrong is
+200 pipeline tests and 49 app tests, covering the places where being wrong is
 easy and silent: tar-slice truncation, the deduplication *winner rule* (not just
 its row count), segmentation boundaries, phase detection against synthetic
 climb/cruise/descent profiles with injected noise, hold geometry against a

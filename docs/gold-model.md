@@ -176,11 +176,9 @@ because 14 MB fits in one; there is no pruning to win inside it that matters.
 
 **Streamlit** reads `flights` for the filter lists and the selected flight's metadata, then `flight_phases` and `flight_holds` for that flight, and pulls its trajectory from `observations` filtered on `flight_id`. No reconstruction, phase detection or hold detection happens at query time — all of it is precomputed.
 
-> `load_trajectory` currently filters on `flight_id` alone. The selected
-> flight's `flight_date` is already in hand at that point, and adding it to the
-> filter takes the read from 1,538 ms to 320 ms by pruning six of the seven
-> partitions. That is an app-side change, left for the application phase; the
-> table supports it today.
+The app passes the selected flights' dates alongside their ids, so the read
+prunes six of the seven partitions — 1,538 ms becomes 320 ms. Nothing is read
+from the point table until a flight is actually selected.
 
 **Power BI** should import `flights`, `movements`, `flight_phases`, `flight_holds` and `airport_daily_operations`; together they are well under a million rows and model naturally with `flight_id` relationships. It should **not** import the 3.3M-row `observations` table — trajectories belong in the interactive explorer, and if a map is needed in BI, filter to a day or an airport first. Hourly statistics need no extra table: `departure_time` and `arrival_time` on `flights` carry the hour, and `movements` carries one row per event for the same question at movement grain.
 
