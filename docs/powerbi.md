@@ -34,6 +34,14 @@ That writes to `data/powerbi/` on your machine:
 | `flight_phases.parquet` | one per detected phase interval | 740,488 |
 | `flight_tracks_sample.parquet` | thinned trajectory points | 374,742 |
 
+> **These row counts are stale.** They are from the unscoped global run that
+> preceded the [seven-day ZRH/DUS scope](scope.md); the published tables now
+> hold 4,740 flights, 5,249 movements and 14 airport-days. The export itself is
+> unchanged and re-running the command above produces the current data — only
+> these figures, and the row counts in the model diagram below, predate it.
+> Everything else on this page (relationships, DAX, page layouts) is unaffected
+> by the size of the tables.
+
 Then in Power BI Desktop, for each file:
 
 **Get Data → Parquet → Browse →** `data/powerbi/<file>.parquet` **→ Load**

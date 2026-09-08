@@ -4,7 +4,13 @@ import tarfile
 
 import pytest
 
-from adsb.ingest import extract_traces, find_member_offset
+from adsb.ingest import (
+    asset_parts,
+    extract_traces,
+    find_member_offset,
+    release_date,
+    release_tag,
+)
 
 
 def build_tar(members):
@@ -98,3 +104,39 @@ def test_extract_traces_refuses_to_write_outside_dest(tmp_path):
 
     assert written == []
     assert not (tmp_path.parent / "escaped.json.gz").exists()
+
+
+def test_a_day_and_its_release_tag_are_inverses():
+    tag = "v2025.12.24-planes-readsb-prod-0"
+    assert release_tag("2025-12-24") == tag
+    assert release_date(tag) == "2025-12-24"
+
+
+def test_asset_parts_follows_a_split_release_until_the_parts_run_out():
+    """Six of the seven study days are split into 2 GB parts."""
+    published = {
+        "v2025.12.30-planes-readsb-prod-0.tar.aa": 2_000_000_000,
+        "v2025.12.30-planes-readsb-prod-0.tar.ab": 1_200_000_000,
+    }
+    sizes = lambda url: published.get(url.rsplit("/", 1)[-1])  # noqa: E731
+
+    parts = asset_parts("v2025.12.30-planes-readsb-prod-0", size_of=sizes)
+
+    assert [size for _, size in parts] == [2_000_000_000, 1_200_000_000]
+    assert parts[0][0].endswith(".tar.aa")
+
+
+def test_asset_parts_falls_back_to_an_unsplit_archive():
+    """2025-12-25 is quiet enough to fit in one part, so .tar.aa is a 404."""
+    published = {"v2025.12.25-planes-readsb-prod-0.tar": 1_989_755_392}
+    sizes = lambda url: published.get(url.rsplit("/", 1)[-1])  # noqa: E731
+
+    parts = asset_parts("v2025.12.25-planes-readsb-prod-0", size_of=sizes)
+
+    assert len(parts) == 1
+    assert parts[0][0].endswith(".tar")
+
+
+def test_asset_parts_raises_when_a_release_publishes_nothing():
+    with pytest.raises(ValueError):
+        asset_parts("v2025.12.31-planes-readsb-prod-0", size_of=lambda url: None)

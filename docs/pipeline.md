@@ -12,18 +12,39 @@ Every command below runs in the `spark` container:
 
 ## Getting the sample data
 
-Each adsb.lol release is one day of global flight data, ~3.2 GB, published as an uncompressed tar split across two GitHub assets. We do not download a whole one. Because tar is sequential, a byte-range request for a slice of the first part yields whole, valid members — so ingestion locates the `./traces/` region by walking the tar headers, then downloads a small window from it:
+Each adsb.lol release is one day of global flight data, 2.0–3.2 GB, published as an uncompressed tar. We do not download a whole one. Because tar is sequential, a byte-range request for a prefix yields whole, valid members — so ingestion locates the `./traces/` region by walking the tar headers, then downloads a window from it:
 
 ```bash
 PYTHONPATH=src python3 -m adsb.ingest
 ```
 
-Ingestion needs no third-party packages — it is standard library only, so it
-runs on the host without a virtualenv or a container.
+With no arguments this fetches the whole [study period](scope.md): seven releases at 50% of each day's traces, **224,652 trace files, 9.36 GB**, into `data/raw/adsb/<release-tag>/traces/`. Each release gets a `manifest.json` recording the release, the byte range, the fraction actually sampled and a checksum of the slice.
 
-This fetches ~8 MB (about 220 aircraft trace files, ~10 s) into `data/raw/adsb/<release-tag>/traces/`, alongside a `manifest.json` recording the exact release, byte range and checksum used. File contents are stored exactly as they appear in the archive — gzipped readsb [trace JSON](https://github.com/wiedehopf/readsb/blob/dev/README-json.md#trace-jsons), unparsed and uncleaned. Only the name gains its true `.gz` suffix, because tools that pick a decompression codec from the suffix (Spark among them) otherwise read the gzip bytes as text.
+Ingestion needs no third-party packages — it is standard library only, so it runs on the host without a virtualenv or a container.
 
-Use `--tag` for a different day, `--bytes` for a larger sample. `data/` is gitignored, so this step is how you reproduce the dataset locally.
+File contents are stored exactly as they appear in the archive — gzipped readsb [trace JSON](https://github.com/wiedehopf/readsb/blob/dev/README-json.md#trace-jsons), unparsed and uncleaned. Only the name gains its true `.gz` suffix, because tools that pick a decompression codec from the suffix (Spark among them) otherwise read the gzip bytes as text.
+
+**Nothing about the archive's layout is assumed**, because none of it is constant across the seven days:
+
+| | |
+|---|---|
+| Where `./traces/` starts | byte 512 on most days, **763 MB** in on 2025-12-30 (behind a heatmap section) — so the offset is found by walking the header chain with 512-byte reads, never hardcoded |
+| How many assets | six days are split into 2 GB parts (`.tar.aa`, `.tar.ab`); 2025-12-25 is quiet enough to fit in one and is published as a plain `.tar`, so assuming `.tar.aa` is a 404 on Christmas Day. The parts are probed |
+| Directory order | `<xx>` is the **last** two hex digits of the aircraft address, and the directories appear in no particular order — which is what makes a byte prefix a usable sample |
+
+**Why the sample is a fraction and not a byte budget.** A fixed `--bytes` would sample the seven days unequally, because their traces regions differ by a factor of 1.5 — and it would sample Christmas Day, the smallest archive, most heavily of all. "Traffic dropped on the 25th" would then be indistinguishable from "we downloaded more of the 25th". `--fraction` takes the same share of every day instead. The per-day aircraft counts that come out of it are the real signal:
+
+| Day | Trace files | Downloaded |
+|---|---:|---:|
+| 2025-12-24 | 30,002 | 1.28 GB |
+| 2025-12-25 | **22,350** | 0.99 GB |
+| 2025-12-26 | 33,455 | 1.39 GB |
+| 2025-12-27 | **37,837** | 1.50 GB |
+| 2025-12-28 | 35,252 | 1.50 GB |
+| 2025-12-29 | 34,893 | 1.47 GB |
+| 2025-12-30 | 30,863 | 1.22 GB |
+
+Use `--tag` (repeatable) for specific days and `--bytes` for a fixed budget when the size of the day does not matter — `--tag v2025.12.30-planes-readsb-prod-0 --bytes 200000000` is a quick 5,000-aircraft sample. `data/` is gitignored, so this step is how you reproduce the dataset locally.
 
 ## Putting it in object storage
 
@@ -248,7 +269,7 @@ A check is a SQL predicate matching *invalid* rows; a table's checks are counted
 
 The rules come from failure modes this pipeline actually exhibited:
 
-- **Silent emptiness.** A mistyped URI or empty bucket yields zero rows and every downstream table then builds successfully and empty. Each table asserts it is non-empty.
+- **Silent emptiness.** A mistyped URI or empty bucket yields zero rows and every downstream table then builds successfully and empty. Each table asserts it is non-empty — with exactly one exception. `flight_holds` is a *detection* result, so "no aircraft circled at these airports today" is a measurement rather than a defect, and it is a real one: 2025-12-24 detected 23 holds and 2025-12-25, the quietest traffic day of the European year, detected none. Under the previous global scope, at 4,393 holds a day, an empty table really would have meant something had broken; narrowing to two airports is what made the rule wrong, and the [study-period run](scope.md) is what surfaced it. Every other table has a row per flight or per observation, so emptiness there stays a failure.
 - **Silent string corruption.** `release_tag` is filled by a regex that once quietly produced `''` for an unexpected path shape. Empty-string checks exist because that happened.
 - **Invariants that hold by construction and would otherwise go unverified**: one observation per `(icao, event_time)`; flights never end before they start; every observation lands in exactly one flight; every child row's `flight_id` exists in `flights`; `arrivals + departures = total_operations`.
 - **Coordinate ranges.** The pipeline deliberately does not *correct* coordinates, since profiling found none out of range — but that is a statement about two releases, so it is asserted rather than assumed.

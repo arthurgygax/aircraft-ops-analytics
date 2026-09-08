@@ -14,6 +14,7 @@ way in either place:
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import boto3
@@ -25,8 +26,12 @@ from adsb.ingest import DEFAULT_DEST_ROOT
 DEFAULT_BUCKET = os.environ.get("S3_BUCKET", "adsb")
 DEFAULT_PREFIX = "raw/adsb"
 
+# Enough to hide the round trip, not so many that the connection pool below
+# starts queueing; the pool is sized to match.
+DEFAULT_WORKERS = 32
 
-def build_client():
+
+def build_client(workers: int = DEFAULT_WORKERS):
     """S3 client. ``S3_ENDPOINT`` points it at MinIO; without it, at AWS."""
     endpoint = os.environ.get("S3_ENDPOINT")
     return boto3.client(
@@ -34,8 +39,13 @@ def build_client():
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
         aws_secret_access_key=os.environ.get("S3_SECRET_KEY"),
-        # MinIO serves buckets as a path, not as a DNS subdomain
-        config=Config(s3={"addressing_style": "path"}) if endpoint else None,
+        config=Config(
+            # botocore defaults to 10 connections; uploading on more threads
+            # than that just makes them wait for each other
+            max_pool_connections=max(workers, 10),
+            # MinIO serves buckets as a path, not as a DNS subdomain
+            **({"s3": {"addressing_style": "path"}} if endpoint else {}),
+        ),
     )
 
 
@@ -58,12 +68,19 @@ def upload_raw(
     bucket: str = DEFAULT_BUCKET,
     prefix: str = DEFAULT_PREFIX,
     tag: str | None = None,
+    workers: int = DEFAULT_WORKERS,
 ) -> list[str]:
     """Upload files under ``source_root``. Returns the keys written.
 
     ``tag`` restricts the upload to one release, so adding a day does not
     re-send every day already uploaded. Keys stay relative to ``source_root``
     either way, keeping the layout identical.
+
+    Uploaded in parallel because the study period is 224,652 trace files: each
+    one is its own small PUT, the time goes on round trips rather than on
+    bytes, and sequentially it measured 33 objects a second -- two hours for a
+    9 GB sample that the network could carry in a few minutes. boto3 clients
+    are documented as thread-safe for this.
     """
     source_root = Path(source_root)
     if not source_root.exists():
@@ -73,14 +90,15 @@ def upload_raw(
 
     ensure_bucket(client, bucket)
 
-    keys = []
-    scope = source_root / tag if tag else source_root
-    for path in sorted(scope.rglob("*")):
-        if not path.is_file():
-            continue
-        key = object_key(path, source_root, prefix)
-        client.upload_file(str(path), bucket, key)
-        keys.append(key)
+    root = source_root / tag if tag else source_root
+    paths = [path for path in sorted(root.rglob("*")) if path.is_file()]
+    keys = [object_key(path, source_root, prefix) for path in paths]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(
+            lambda pair: client.upload_file(str(pair[0]), bucket, pair[1]),
+            zip(paths, keys),
+        ))
     return keys
 
 
@@ -92,10 +110,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
     parser.add_argument("--tag", default=None, help="upload one release only")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     args = parser.parse_args(argv)
 
-    keys = upload_raw(build_client(), args.source, args.bucket, args.prefix, args.tag)
-    print(f"Uploaded {len(keys)} objects to s3a://{args.bucket}/{args.prefix}/")
+    keys = upload_raw(
+        build_client(args.workers),
+        args.source,
+        args.bucket,
+        args.prefix,
+        args.tag,
+        args.workers,
+    )
+    print(f"Uploaded {len(keys):,} objects to s3a://{args.bucket}/{args.prefix}/")
 
 
 if __name__ == "__main__":

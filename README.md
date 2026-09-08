@@ -10,14 +10,18 @@ Power BI.**
 ![Storage](https://img.shields.io/badge/Storage-S3%20%2F%20MinIO-C72E49?style=flat&logo=minio&logoColor=white)
 ![Docker](https://img.shields.io/badge/Runtime-Docker%20Compose-2496ED?style=flat&logo=docker&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/App-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-187%20passing-3fb950?style=flat)
+![Tests](https://img.shields.io/badge/tests-216%20passing-3fb950?style=flat)
 
 Nobody publishes an open dataset of "flights that departed airport X today".
 What *is* public is the raw radio: hundreds of millions of position reports a
 day, broadcast by aircraft and collected by volunteers. This project treats
-that as a data engineering problem — take 44 million observations, work out
-which aircraft were flying, where they went, what they were doing, and which of
-them circled before landing.
+that as a data engineering problem — read 9 GB of it, work out which aircraft
+were flying, where they went, what they were doing, and which of them circled
+before landing.
+
+The study dataset is **seven days at Zürich and Düsseldorf**: 4,740
+reconstructed flights and every one of their 3.3 million trajectory points,
+selected out of 17 million candidate observations.
 
 ---
 
@@ -27,11 +31,11 @@ them circled before landing.
 flowchart LR
     SRC["adsb.lol<br/>daily release"] --> RAW["Raw<br/>gzipped JSON"]
     RAW --> OBJ[("Object storage<br/>MinIO / S3")]
-    OBJ --> OBS["Observations<br/>44.6M points"]
-    OBS --> FL["Flights<br/>107,630 reconstructed"]
-    OBS --> PH["Phases<br/>740,488 intervals"]
-    OBS --> HLD["Holds<br/>4,393 detected"]
-    FL --> MOV["Movements<br/>92,951 inferred"]
+    OBJ --> OBS["Observations<br/>3.33M points"]
+    OBS --> FL["Flights<br/>4,740 reconstructed"]
+    OBS --> PH["Phases<br/>32,976 intervals"]
+    OBS --> HLD["Holds<br/>36 detected"]
+    FL --> MOV["Movements<br/>5,249 inferred"]
     MOV --> OPS["Airport daily<br/>operations"]
     HLD --> OPS
     HLD --> FL
@@ -61,6 +65,29 @@ and a full rebuild has to be asked for by name.
 | **Analytics** | flight reconstruction, phase detection, holding-pattern geometry |
 | **Visualisation** | a Streamlit explorer and a documented Power BI model |
 
+## Analytical scope
+
+The dataset is **seven consecutive days — 2025-12-24 to 2025-12-30 — at Zürich
+(LSZH) and Düsseldorf (EDDL)**, and the rule for what is in it is one sentence:
+
+> A flight is in scope when it **departed from or arrived at** a study airport.
+> Its **whole trajectory** is then in scope — every observation of that flight,
+> wherever the aircraft was.
+
+The filter is on flight identity, never on the position of an individual
+observation. A Zurich departure to New York spends nine tenths of its
+trajectory outside Europe; filtering points by distance from the airport would
+leave a stub climbing out of Kloten and nothing else. So the flight is
+identified first and its trajectory kept in full, at the point grain, with
+nothing aggregated, clipped or simplified.
+
+The scope is a value in `adsb.scope`, not a constant scattered through the
+transformations: no module below it contains a date or an airport code, and the
+period, the airports and the pre-filter radius are all configurable by
+environment or command line. Full reasoning, including how a cheap pre-filter
+makes this affordable without being able to drop a flight it should keep, is in
+**[docs/scope.md](docs/scope.md)**.
+
 ## Quick start
 
 Requires Docker. From a clean checkout:
@@ -69,39 +96,36 @@ Requires Docker. From a clean checkout:
 # 1. object storage
 docker compose up -d minio
 
-# 2. a small real sample: ~8 MB, 224 aircraft, one full day
+# 2. the study period: seven releases, 50% of each day's traces
 PYTHONPATH=src python3 -m adsb.ingest
 docker compose run --rm spark python -m adsb.upload_raw
 docker compose run --rm spark python -m adsb.airports      # airport reference
 
-# 3. the pipeline, in one Spark session
-docker compose run --rm spark python -m adsb.run_pipeline \
-    --tag v2025.12.30-planes-readsb-prod-0 --full-rebuild
+# 3. the pipeline, all seven days in one Spark session
+SPARK_DRIVER_MEMORY=12g docker compose run --rm spark \
+    python -m adsb.run_pipeline --full-rebuild
 
 # 4. explore it
 docker compose up -d explorer      # http://localhost:8502
 ```
 
-Each stage prints its row counts and runs its own quality checks. To validate
-every table at once:
-`docker compose run --rm spark python -m adsb.quality`.
+Both commands default to the study period, so neither takes a date. Each stage
+prints its row counts and runs its own quality checks; to validate every table
+at once, `docker compose run --rm spark python -m adsb.quality`.
 
-For a bigger sample, `PYTHONPATH=src python3 -m adsb.ingest --bytes 200000000`
-(5,073 aircraft) and re-run. Larger runs need more driver heap:
-`SPARK_DRIVER_MEMORY=12g docker compose run ...`.
-
-Adding a second day is incremental, not a rebuild — drop `--full-rebuild` and
-only that day's partition is replaced:
+To try it without the full download, take a single day at a small fixed budget:
 
 ```bash
-TAG=v2025.12.29-planes-readsb-prod-0
-PYTHONPATH=src python3 -m adsb.ingest --tag $TAG
+TAG=v2025.12.30-planes-readsb-prod-0
+PYTHONPATH=src python3 -m adsb.ingest --tag $TAG --bytes 200000000
 docker compose run --rm spark python -m adsb.upload_raw --tag $TAG
-docker compose run --rm spark python -m adsb.run_pipeline --tag $TAG
+docker compose run --rm spark python -m adsb.run_pipeline --tag $TAG --full-rebuild
 ```
 
-A run reclaims its own tombstoned files at the end. Set `ADSB_ROOT` to a
-scratch prefix for exploratory runs so they never touch the real tables.
+Reprocessing one day of an existing period is incremental, not a rebuild — drop
+`--full-rebuild` and only that day's partition is replaced. A run reclaims its
+own tombstoned files at the end. Set `ADSB_ROOT` to a scratch prefix for
+exploratory runs so they never touch the real tables.
 
 ## Key engineering decisions
 
@@ -109,10 +133,24 @@ Full reasoning per stage in [docs/pipeline.md](docs/pipeline.md); these are the
 ones that shaped the design.
 
 **Byte-range ingestion instead of downloading a day.** A daily release is
-3.2 GB. Because it is an *uncompressed* tar split across GitHub assets, an HTTP
-range request for a prefix yields whole, valid members — so the pipeline walks
-the tar header chain with 512-byte reads to find where `./traces/` starts
-(763 MB in, past a heatmap section) and downloads only what it needs.
+2.0–3.2 GB. Because it is an *uncompressed* tar, an HTTP range request for a
+prefix yields whole, valid members — so the pipeline walks the tar header chain
+with 512-byte reads to find where `./traces/` starts and downloads only what it
+needs. Nothing about the layout is assumed, because none of it holds across the
+seven days: `./traces/` starts at byte 512 on most of them and 763 MB in on
+2025-12-30, and six are split into 2 GB parts while Christmas Day is quiet
+enough to be published as a single `.tar`.
+
+**The sample is a fraction of each day, not a fixed number of bytes.** A byte
+budget would have sampled the seven days unequally — and would have sampled
+Christmas Day, the smallest archive, most heavily of all, making "traffic
+dropped on the 25th" indistinguishable from "we downloaded more of the 25th".
+
+**Scope is enforced on flight identity, never on position.** The 25 km box
+around each airport is only a pre-filter, and it is provably conservative: a
+movement needs an endpoint within 5 km, and that endpoint is itself a trace
+point. Flights are then selected by the movements they made, and their
+trajectories kept whole — see [docs/scope.md](docs/scope.md).
 
 **Thresholds are measured, never assumed.** Flights split on a 15-minute
 tracking gap because segments containing more than one callsign — the signature
@@ -171,18 +209,23 @@ with published movement statistics, and every Gold row carries a
 
 ## Example questions it answers
 
-- Which airports saw the most inferred movements, and how does traffic
-  distribute across the hours of the day?
-- Which airlines and aircraft types operate at a given airport?
+- How does traffic differ between Zurich and Düsseldorf, by day and by hour?
+- Which airlines and aircraft types operate at each?
 - What altitude and speed profile did a particular flight fly, and when did it
   climb, cruise and descend?
 - Which flights circled before landing, for how long, and how many circuits?
-- How does the share of arrivals showing sustained circling differ between
-  airports?
+- What does an individual trajectory look like, and how do trajectories differ
+  between airports, airlines and types?
 
-On the sample the busiest inferred airports come out as ORD, ATL, AMS, YYZ, DEN
-and LAX, with arrivals balancing departures to within a few percent at each —
-which nothing in the aggregation enforces.
+Nothing in the aggregation enforces the answers, which is what makes them worth
+checking. Swiss (1,264 flights), Eurowings (513) and Edelweiss (260) come out on
+top; the A320 leads on type with the A220-300 second, which is Swiss's fleet;
+Zurich–Heathrow runs 59 departures against 59 arrivals and Zurich–Amsterdam
+48 against 48. Traffic drops on 25 December — Zurich 469 movements against 635
+on the 29th — and recovers over the following days.
+
+Full measured results, and the two artefacts to know about before reading the
+tables, are in [docs/scope.md](docs/scope.md).
 
 ## The applications
 
@@ -209,7 +252,7 @@ docker compose run --rm spark pytest -q                             # pipeline
 docker compose run --rm explorer pytest tests/test_app_data.py -q   # app
 ```
 
-168 pipeline tests and 19 app tests, covering the places where being wrong is
+197 pipeline tests and 19 app tests, covering the places where being wrong is
 easy and silent: tar-slice truncation, the deduplication *winner rule* (not just
 its row count), segmentation boundaries, phase detection against synthetic
 climb/cruise/descent profiles with injected noise, hold geometry against a
@@ -225,10 +268,18 @@ tests deliberately corrupts data to prove every check fires.
 
 ## Limitations
 
-**The sample is not a full day.** The pipeline has been run on 31,387 aircraft
-(44.4M observations), roughly half the aircraft in one release: the second
-archive part is not yet handled, so absolute counts are about half of full
-coverage.
+**The dataset is a 50% sample, not a census.** Each day's traces are sampled at
+the same rate, so the days are comparable with each other — but absolute counts
+are roughly halved. Read "ZRH had 430 arrivals" as "430 in a 50% sample". The
+prefix cut lands on aircraft grouped by the last two hex digits of their
+address, which carries no information about operator, type or destination, so
+proportions are preserved even though counts are not. The specific aircraft
+sampled also differ from day to day: aggregate comparisons across days are
+sound, following one registration across the week is not.
+
+**Only ZRH and DUS traffic is in the dataset.** By design — see
+[docs/scope.md](docs/scope.md). Flights that touched neither airport were never
+written, so this is not a global dataset with a filter applied at query time.
 
 **Coverage is uneven.** adsb.lol sees what its volunteers see — dense over
 Europe and North America, thin elsewhere, and patchy on the ground everywhere
@@ -255,6 +306,7 @@ src/adsb/            the pipeline, one module per grain
   spark_explore.py   Spark session, trace reader, and the exploration job
   ingest.py          byte-range download from adsb.lol
   upload_raw.py      raw files to object storage
+  scope.py           the study period and airports, and the two scope filters
   observations.py    decode, clean, deduplicate and segment -- one pass
   flights.py         the flight table
   airports.py        airport reference, movements, daily operations
@@ -267,11 +319,11 @@ src/adsb/            the pipeline, one module per grain
 app/                 Streamlit Flight Explorer (data.py + main.py)
 bench/               Spark vs pandas benchmark on the same pipeline
 tests/               the test suite
-docs/                pipeline, Gold model and Power BI reference
+docs/                scope, pipeline, Gold model and Power BI reference
 docker/              four images: pipeline, app, benchmark, legacy
 ```
 
-Reference documentation: [pipeline](docs/pipeline.md) ·
+Reference documentation: [scope](docs/scope.md) · [pipeline](docs/pipeline.md) ·
 [Gold model](docs/gold-model.md) · [Power BI](docs/powerbi.md)
 
 ## Data source

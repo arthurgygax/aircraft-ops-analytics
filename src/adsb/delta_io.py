@@ -111,6 +111,15 @@ def write_delta(
             "the whole table on purpose."
         )
 
+    if partition_by:
+        # One file per day, instead of one per shuffle partition. Spark's
+        # default 200 turned a 731-row day of movements into 195 files of four
+        # rows, and the Streamlit app pays for every one of them as a separate
+        # object read. This is safe because a day is bounded: the analytical
+        # scope caps it at a few hundred thousand observations, tens of MB of
+        # Parquet. It would not be safe on an unscoped 44.6M-row day.
+        df = df.repartition(partition_by)
+
     writer = df.write.format("delta").mode("overwrite")
     if partition_by:
         writer = writer.partitionBy(partition_by)

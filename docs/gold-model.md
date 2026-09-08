@@ -17,14 +17,22 @@ flights ──┬── flight_phases   (phase intervals)
 airport_daily_operations   (airport × date, independent grain)
 ```
 
+Row counts are for the **[study period](scope.md)** — seven days at Zurich and
+Düsseldorf — which is what the published tables now hold.
+
 | Table | Grain | Rows | Physical location |
 |---|---|---|---|
-| `observations` | one per reception | 44,619,824 | `s3a://adsb/observations` |
-| `flights` | one per flight | 107,630 | `s3a://adsb/flights` |
-| `movements` | one per flight × arrival/departure | 92,951 | `s3a://adsb/movements` |
-| `flight_phases` | one per phase interval | 740,488 | `s3a://adsb/flight_phases` |
-| `flight_holds` | one per detected hold | 4,393 | `s3a://adsb/flight_holds` |
-| `airport_daily_operations` | one per airport × date | 1,382 | `s3a://adsb/airport_daily_operations` |
+| `observations` | one per reception | 3,330,291 | `s3a://adsb/observations` |
+| `flights` | one per flight | 4,740 | `s3a://adsb/flights` |
+| `movements` | one per flight × arrival/departure | 5,249 | `s3a://adsb/movements` |
+| `flight_phases` | one per phase interval | 32,976 | `s3a://adsb/flight_phases` |
+| `flight_holds` | one per detected hold | 36 | `s3a://adsb/flight_holds` |
+| `airport_daily_operations` | one per airport × date | 14 | `s3a://adsb/airport_daily_operations` |
+
+> Figures elsewhere in the docs of the form "44.6M observations", "107,630
+> flights" or "4,393 holds" come from the **unscoped development runs** over a
+> whole global day. They are the evidence behind the calibrated thresholds and
+> are left as they were measured; they do not describe the published tables.
 
 **There is no medallion tiering in the names, because there are no longer
 tiers.** Each of these is at a grain no other table holds. The point grain used

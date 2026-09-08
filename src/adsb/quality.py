@@ -279,8 +279,15 @@ def validate(
     rules: Mapping[str, str],
     unique_keys: Sequence[str] | None = None,
     extra: Sequence[CheckResult] = (),
+    allow_empty: bool = False,
 ) -> list[CheckResult]:
-    results = [check_not_empty(df), *check_rows(df, rules)]
+    """Run a table's rules. ``allow_empty`` for tables that legitimately can be.
+
+    Emptiness is a defect for every table that has a row per flight or per
+    observation, and only for those. See ``validate_flight_holds``.
+    """
+    results = [] if allow_empty else [check_not_empty(df)]
+    results += check_rows(df, rules)
     if unique_keys:
         results.append(check_unique(df, unique_keys))
     results.extend(extra)
@@ -342,8 +349,22 @@ def validate_flight_phases(df: DataFrame) -> list[CheckResult]:
 
 
 def validate_flight_holds(df: DataFrame) -> list[CheckResult]:
+    """The one table allowed to be empty.
+
+    Every other table has a row per flight or per observation, so building
+    empty means something upstream failed. Holds are a *detection* result:
+    "no aircraft circled at these airports today" is a measurement, not a
+    defect. It is also a real outcome here: 2025-12-24 detected 23 holds and
+    2025-12-25, the quietest traffic day of the European year, detected none.
+    Under the previous global scope, at 4,393 holds a day, an empty table
+    really would have meant something had broken.
+    """
     return validate(
-        "flight_holds", df, FLIGHT_HOLD_RULES, unique_keys=("flight_id", "hold_seq")
+        "flight_holds",
+        df,
+        FLIGHT_HOLD_RULES,
+        unique_keys=("flight_id", "hold_seq"),
+        allow_empty=True,
     )
 
 

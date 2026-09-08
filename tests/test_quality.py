@@ -32,6 +32,7 @@ from adsb.quality import (  # noqa: E402
     check_unique,
     collisions_resolved,
     validate_airport_operations,
+    validate_flight_holds,
     validate_flights,
     validate_movements,
     validate_observations,
@@ -245,6 +246,38 @@ def test_an_empty_table_is_a_failure(table):
     """The silent-empty failure mode: everything downstream builds, emptily."""
     assert check_not_empty(table("flights").limit(0)).failures == 1
     assert check_not_empty(table("flights")).passed
+
+
+def test_an_empty_flights_table_still_fails_validation(table):
+    failed = [r.check for r in validate_flights(table("flights").limit(0)) if not r.passed]
+    assert "table is not empty" in failed
+
+
+def test_an_empty_holds_table_is_a_measurement_not_a_failure(spark):
+    """No aircraft circled at these airports today is a result, not a bug.
+
+    Real: 2025-12-25 detected no holds at ZRH or DUS. Every other table has a
+    row per flight or per observation, so emptiness there stays a failure --
+    the test above holds that line.
+    """
+    empty = spark.createDataFrame([], StructType([
+        StructField("flight_id", StringType()),
+        StructField("hold_seq", IntegerType()),
+        StructField("hold_start", TimestampType()),
+        StructField("hold_end", TimestampType()),
+        StructField("duration_seconds", LongType()),
+        StructField("span_km", DoubleType()),
+        StructField("circuits", DoubleType()),
+        StructField("min_altitude_ft", DoubleType()),
+        StructField("max_altitude_ft", DoubleType()),
+        StructField("centroid_latitude", DoubleType()),
+        StructField("centroid_longitude", DoubleType()),
+    ]))
+
+    results = validate_flight_holds(empty)
+
+    assert [r.check for r in results if not r.passed] == []
+    assert "table is not empty" not in [r.check for r in results]
 
 
 def test_duplicate_keys_are_counted(table):
