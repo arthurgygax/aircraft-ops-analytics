@@ -183,6 +183,10 @@ CORRUPTIONS = [
     ("observations", {"is_icao_address": None}, "is_icao_address is set"),
     # the regex regression that actually happened
     ("observations", {"release_tag": ""}, "release_tag is recorded"),
+    # a point filed under the wrong day is invisible to a date-filtered read,
+    # which is how the app reaches a trajectory
+    ("observations", {"release_date": date(2025, 12, 29)},
+     "observation falls in its partition day"),
     ("movements", {"movement_type": "diversion"},
      "movement_type is arrival or departure"),
     ("movements", {"ident": None}, "an airport is matched"),

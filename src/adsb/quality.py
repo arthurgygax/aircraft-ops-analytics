@@ -63,6 +63,13 @@ OBSERVATION_RULES: Mapping[str, str] = {
     "blank callsign normalized to NULL": "callsign = ''",
     "release_tag is recorded": "release_tag IS NULL OR release_tag = ''",
     "release_date is recorded": "release_date IS NULL",
+    # The partition key is derived from the release identity, never from the
+    # rows (see adsb.delta_io for why). That is only safe while the two agree,
+    # and the trajectory store leans on the agreement twice: a point lands in
+    # the partition a reader would look for it in, and the app's first filter
+    # -- by date -- therefore returns a whole day rather than part of one.
+    # Measured as holding for every row; asserted so it stays that way.
+    "observation falls in its partition day": "DATE(event_time) <> release_date",
 }
 
 MOVEMENT_RULES: Mapping[str, str] = {

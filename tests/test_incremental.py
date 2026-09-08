@@ -138,6 +138,34 @@ def test_reprocessing_one_day_leaves_the_others_untouched(table):
     assert table.parquet_files(DAY1) == day1_files, "day 1 was rewritten"
 
 
+def test_a_day_is_written_as_one_file_not_one_per_shuffle_partition(table):
+    """The tiny-file guard.
+
+    Spark's default 200 shuffle partitions once turned a 731-row day of
+    movements into 195 files of four rows, and the explorer pays for each as a
+    separate object read. ``write_delta`` repartitions by the partition column,
+    so a day is one file however many partitions produced it.
+    """
+    table(DAY1, [(f"a{n:04d}", n) for n in range(500)])
+
+    assert len(table.parquet_files(DAY1)) == 1
+
+
+def test_one_day_can_be_read_without_touching_the_others(table):
+    """Step one of the app's access pattern: filter by date.
+
+    The trajectory store is partitioned so this prunes rather than scans; the
+    partition layout is what makes it a directory choice rather than a filter.
+    """
+    table(DAY1, [("aaa", 1), ("bbb", 2)])
+    table(DAY2, [("ccc", 3)])
+
+    one_day = table.read().where(f"release_date = '{DAY2}'")
+
+    assert {(r.icao, r.value) for r in one_day.collect()} == {("ccc", 3)}
+    assert len(table.parquet_files(DAY2)) == 1, "the day is one prunable file"
+
+
 def test_a_day_cannot_overwrite_a_different_days_partition(table):
     """Guards the hazard that makes release_date safe to key on."""
     table(DAY1, [("aaa", 1)])

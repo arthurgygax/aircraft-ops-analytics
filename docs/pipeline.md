@@ -305,6 +305,15 @@ Measured on 44.4M rows of day 1 plus a small day 2, from the Delta transaction l
 | v7 | add day 2 | 293,728 | 12 | **0** |
 | v8 | reprocess day 2 | 293,728 | 12 | **12** |
 
+The transaction log shows the *shape* of the write. That reprocessing reproduces a day's **content** exactly was checked separately, at row level: 2025-12-30 was re-run against the study-period tables and the version before compared with the version after, as a multiset rather than as an ordered list.
+
+| Table | Rows | Only in v9 | Only in v10 |
+|---|---:|---:|---:|
+| `observations` | 3,330,291 | **0** | **0** |
+| `flight_phases` | 32,976 | **0** | **0** |
+
+Order is not part of that guarantee and should not be relied on: rewriting a partition can return its rows in a different order, and the first attempt at this check used an order-sensitive digest and reported a difference that did not exist. Read back with an `ORDER BY` — `flight_id, observation_seq` on the trajectory — rather than trusting file order.
+
 Adding a day removed no existing files — day 1 was never rewritten. Reprocessing removed exactly the 12 files it had previously written, and row counts were unchanged.
 
 Run the tests the same way:

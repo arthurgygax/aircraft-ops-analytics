@@ -10,7 +10,7 @@ Power BI.**
 ![Storage](https://img.shields.io/badge/Storage-S3%20%2F%20MinIO-C72E49?style=flat&logo=minio&logoColor=white)
 ![Docker](https://img.shields.io/badge/Runtime-Docker%20Compose-2496ED?style=flat&logo=docker&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/App-Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-216%20passing-3fb950?style=flat)
+![Tests](https://img.shields.io/badge/tests-219%20passing-3fb950?style=flat)
 
 Nobody publishes an open dataset of "flights that departed airport X today".
 What *is* public is the raw radio: hundreds of millions of position reports a
@@ -152,6 +152,16 @@ movement needs an endpoint within 5 km, and that endpoint is itself a trace
 point. Flights are then selected by the movements they made, and their
 trajectories kept whole — see [docs/scope.md](docs/scope.md).
 
+**Trajectories are stored once, in object storage, at full resolution.**
+3,330,291 points for all 4,740 flights across all seven days live in
+`observations` — not in a container, not in a second `flight_tracks` copy of
+the same grain. Partitioned by day into seven ~14 MB files, so the app's first
+filter prunes six sevenths of the table. Verified to survive a complete
+`docker compose down`, and the explorer image has no JVM, so it cannot
+recompute even in principle — it reads what the pipeline published. Layout,
+persistence proof and measured query latencies are in
+[docs/gold-model.md](docs/gold-model.md#the-trajectory-store).
+
 **Thresholds are measured, never assumed.** Flights split on a 15-minute
 tracking gap because segments containing more than one callsign — the signature
 of two flights merged into one — stay flat at 14–19 for thresholds from 5 to 30
@@ -252,7 +262,7 @@ docker compose run --rm spark pytest -q                             # pipeline
 docker compose run --rm explorer pytest tests/test_app_data.py -q   # app
 ```
 
-197 pipeline tests and 19 app tests, covering the places where being wrong is
+200 pipeline tests and 19 app tests, covering the places where being wrong is
 easy and silent: tar-slice truncation, the deduplication *winner rule* (not just
 its row count), segmentation boundaries, phase detection against synthetic
 climb/cruise/descent profiles with injected noise, hold geometry against a
